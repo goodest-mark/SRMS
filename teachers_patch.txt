@@ -1,0 +1,59 @@
+# =========================
+# TEACHERS
+# =========================
+
+cur.execute("""
+CREATE TABLE IF NOT EXISTS teachers (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    teacher_no TEXT UNIQUE,
+    full_name TEXT NOT NULL,
+    gender TEXT,
+    phone TEXT,
+    email TEXT,
+    status TEXT DEFAULT 'ACTIVE',
+    level TEXT
+)
+""")
+
+# =========================
+# TEACHER SUBJECTS
+# =========================
+
+cur.execute("""
+CREATE TABLE IF NOT EXISTS teacher_subjects (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    teacher_id INTEGER,
+    subject_name TEXT,
+
+    UNIQUE(
+        teacher_id,
+        subject_name
+    ),
+
+    FOREIGN KEY(teacher_id)
+    REFERENCES teachers(id)
+    ON DELETE CASCADE
+)
+""")
+
+# =========================
+# TEACHER CLASSES
+# =========================
+
+cur.execute("""
+CREATE TABLE IF NOT EXISTS teacher_classes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    teacher_id INTEGER,
+    class_name TEXT,
+
+    UNIQUE(
+        teacher_id,
+        class_name
+    ),
+
+    FOREIGN KEY(teacher_id)
+    REFERENCES teachers(id)
+    ON DELETE CASCADE
+)
+""")
+

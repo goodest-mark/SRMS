@@ -1,0 +1,14 @@
+{
+    "education_level": "OLEVEL",
+    "use_streams": true,
+    "forms_o_level": [
+        "Form I",
+        "Form II",
+        "Form III",
+        "Form IV"
+    ],
+    "forms_a_level": [
+        "Form V",
+        "Form VI"
+    ]
+}

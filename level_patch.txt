@@ -1,0 +1,14 @@
+
+    def toggle_level(self):
+
+        current = SystemState.get_level()
+
+        if current == "O_LEVEL":
+            SystemState.set_level("A_LEVEL")
+            self.level_btn.setText("🎓 A-Level")
+        else:
+            SystemState.set_level("O_LEVEL")
+            self.level_btn.setText("🎓 O-Level")
+
+        self.refresh_all()
+

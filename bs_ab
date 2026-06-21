@@ -1,0 +1,300 @@
+        term_id = self.term_box.currentData()
+
+        cur.execute("""
+            SELECT DISTINCT e.subject_name 
+            FROM enrollments e
+            JOIN students s ON e.admission_no = s.admission_no
+            WHERE s.class = ? AND e.academic_year_id = ? AND e.term_id = ?
+            ORDER BY e.subject_name
+        """, (class_name, year_id, term_id))
+        subjects = [r[0] for r in cur.fetchall()]
+
+        # 3. Get all marks for these students/exam
+        cur.execute("""
+            SELECT admission_no, subject_name, marks
+            FROM results
+            WHERE exam_id = ?
+        """, (exam_id,))
+        results_raw = cur.fetchall()
+        
+        marks_map = {}
+        for adm, sub, marks in results_raw:
+            if adm not in marks_map: marks_map[adm] = {}
+            marks_map[adm][sub] = marks
+            
+        conn.close()
+
+        # 4. Assemble final rows
+        rows = []
+        for s in ranking_summary:
+            # Ensure 'marks' is initialized for each student
+            row_data = {
+                'Position': s['position'],
+                'Admission No': s['admission'],
+                'Student Name': s['name'],
+                'Gender': s.get('gender', '-'),
+                'marks': {},
+                'Total': 0,
+                'Average': s['average'],
+                'Points': s['points'],
+                'Division': s['division']
+            } # Initialize marks dict
+            
+            student_total_marks = 0
+            student_subject_count = 0
+            for sub in subjects:
+                m = marks_map.get(s['admission'], {}).get(sub, "-")
+                row_data['marks'][sub] = m
+                if isinstance(m, int):
+                    student_total_marks += m
+                    student_subject_count += 1
+            
+            row_data['Total'] = student_total_marks
+            rows.append(row_data)
+
+        # ======================================================================
+        # NEW CALCULATIONS FOR ANALYTICS & SUMMARIES
+        # ======================================================================
+        
+        # Filter for READY students for calculations that require valid scores
+        ready_students = [s for s in ranking_summary if s['status'] == 'READY']
+        
+        # 1. Class Performance Analysis
+        total_students_in_class = len(ranking_summary)
+        class_averages = [s['average'] for s in ready_students]
+        
+        class_performance = {
+            'total_students': total_students_in_class,
+            'class_average': round(sum(class_averages) / len(class_averages), 2) if class_averages else 0,
+            'highest_average': max(class_averages) if class_averages else 0,
+            'lowest_average': min(class_averages) if class_averages else 0,
+            'pass_count': sum(1 for s in ranking_summary if s['division'] in ['I', 'II', 'III', 'IV']),
+            'fail_count': sum(1 for s in ranking_summary if s['division'] == '0' or s['status'] == 'INCOMPLETE'),
+            'pass_rate': 0,
+            'fail_rate': 0
+        }
+        if total_students_in_class > 0:
+            class_performance['pass_rate'] = round((class_performance['pass_count'] / total_students_in_class) * 100, 2)
+            class_performance['fail_rate'] = round((class_performance['fail_count'] / total_students_in_class) * 100, 2)
+
+        # 2. Gender Summary
+        male_count = sum(1 for s in ranking_summary if s['gender'] == 'Male')
+        female_count = sum(1 for s in ranking_summary if s['gender'] == 'Female')
+        gender_summary = {
+            'Male': male_count,
+            'Female': female_count,
+            'Total': male_count + female_count
+        }
+
+        # 3. Division Summary (reuse div_counts from broadsheet table logic)
+        div_counts = {"I": 0, "II": 0, "III": 0, "IV": 0, "0": 0, "Incomplete": 0}
+        for s in ranking_summary:
+            div = str(s['division'])
+            if s['status'] == 'INCOMPLETE':
+                div_counts['Incomplete'] += 1
+            elif div in div_counts:
+                div_counts[div] += 1
+            else: # Handle any other unexpected division values
+                pass 
+        division_summary = div_counts
+
+        # 4. Top 10 Students
+        top_students = []
+        if ready_students:
+            # ready_students retains ranking order; take first 10
+            top_students = ready_students[:min(10, len(ready_students))]
+
+        # 5. Bottom 10 Students
+        bottom_students = []
+        if ready_students:
+            # Determine bottom performers by lowest average
+            bottom_students = sorted(ready_students, key=lambda x: x.get('average', 0))[:min(10, len(ready_students))]
+
+        # 6. Subject Performance Analysis & 7. Subject Ranking
+        subject_performance = {}
+        for sub in subjects:
+            total_marks_for_sub = 0
+            count_for_sub = 0
+            passes_for_sub = 0
+            fails_for_sub = 0
+            for student_row in rows:
+                mark = student_row['marks'].get(sub)
+                if isinstance(mark, int):
+                    total_marks_for_sub += mark
+                    count_for_sub += 1
+                    if mark >= 50: # Assuming 50 is a pass mark for individual subjects
+                        passes_for_sub += 1
+                    else:
+                        fails_for_sub += 1
+            
+            avg_for_sub = round(total_marks_for_sub / count_for_sub, 2) if count_for_sub > 0 else 0
+            subject_performance[sub] = {'average': avg_for_sub, 'passes': passes_for_sub, 'fails': fails_for_sub}
+        
+        # Find best/worst subject
+        best_subject = max(subject_performance, key=lambda s: subject_performance[s]['average']) if subject_performance else None
+        worst_subject = min(subject_performance, key=lambda s: subject_performance[s]['average']) if subject_performance else None
+        
+        subject_ranking = sorted(subject_performance.items(), key=lambda item: item[1]['average'], reverse=True)
+
+        # Compute max/min averages for return metadata
+        if subject_performance:
+            max_avg = subject_performance[best_subject]['average'] if best_subject else 0
+            min_avg = subject_performance[worst_subject]['average'] if worst_subject else 0
+            subject_ranking = sorted(subject_performance.items(), key=lambda item: item[1]['average'], reverse=True)
+        else:
+            max_avg, min_avg = 0, 0
+            subject_ranking = []
+
+        return {
+            'subjects': subjects,
+            'rows': rows,
+            'meta': {
+                'year': self.year_box.currentText(),
+                'term': self.term_box.currentText(),
+                'exam': self.exam_box.currentText(),
+                'class': class_name,
+                'level': level,
+                'school_profile': get_school_profile_from_db(), # Fetch school profile
+                'generated_date': datetime.now().strftime("%Y-%m-%d %H:%M:%S") # Actual generated date
+            },
+            'class_performance': class_performance,
+            'gender_summary': gender_summary,
+            'division_summary': division_summary,
+            'top_students': top_students,
+            'bottom_students': bottom_students,
+            'subject_performance': subject_performance,
+            'subject_ranking': subject_ranking,
+            # Add best/worst subject info directly to data for easier access in export
+            'best_subject': best_subject,
+            'worst_subject': worst_subject,
+            'max_avg': max_avg, 'min_avg': min_avg,
+            'settings': { # Fetch relevant settings
+                'show_gender_summary': get_setting('show_gender_summary', '1') == '1',
+                'show_subject_ranking': get_setting('show_subject_ranking', '1') == '1',
+                'show_logo': get_setting('show_logo', '1') == '1',
+                'show_watermark': get_setting('show_watermark', '1') == '1',
+            }
+        }
+        
+    def preview_broadsheet(self):
+        self.all_broadsheet_data = self.get_broadsheet_data() # Store data for export
+        data = self.all_broadsheet_data
+        if not data:
+            QMessageBox.warning(self, "No Data", "No results found for the selected criteria.")
+            return
+
+        subjects = data['subjects']
+        rows = data['rows']
+        
+        # Build Table
+        headers = ["Pos", "Adm No", "Name", "Sex"] + subjects + ["Total", "Avg", "Pts", "Div"]
+        self.table.setColumnCount(len(headers))
+        self.table.setHorizontalHeaderLabels(headers)
+        self.table.setRowCount(len(rows))
+
+        for r_idx, r in enumerate(rows):
+            self.table.setItem(r_idx, 0, QTableWidgetItem(str(r['Position'])))
+            self.table.setItem(r_idx, 1, QTableWidgetItem(r['Admission No']))
+            self.table.setItem(r_idx, 2, QTableWidgetItem(r['Student Name']))
+            self.table.setItem(r_idx, 3, QTableWidgetItem(r['Gender']))
+            
+            col_offset = 4
+            for s_idx, sub in enumerate(subjects):
+                val = r['marks'][sub]
+                self.table.setItem(r_idx, col_offset + s_idx, QTableWidgetItem(str(val)))
+            
+            end_offset = col_offset + len(subjects)
+            self.table.setItem(r_idx, end_offset, QTableWidgetItem(str(r['Total'])))
+            self.table.setItem(r_idx, end_offset + 1, QTableWidgetItem(str(r['Average'])))
+            self.table.setItem(r_idx, end_offset + 2, QTableWidgetItem(str(r['Points'])))
+            self.table.setItem(r_idx, end_offset + 3, QTableWidgetItem(str(r['Division'])))
+
+        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
+        
+        # Update Footer (Class Average is now from class_performance)
+        class_avg = data['class_performance']['class_average']
+        summary_text = (
+            f"Students: {data['class_performance']['total_students']} | "
+            f"Div I: {data['division_summary']['I']} | Div II: {data['division_summary']['II']} | Div III: {data['division_summary']['III']} | "
+            f"Div IV: {data['division_summary']['IV']} | Div 0: {data['division_summary']['0']} | Incomplete: {data['division_summary']['Incomplete']} | "
+            f"Class Average: {class_avg}%"
+        )
+        self.footer.setText(summary_text)
+
+        # Update new analytics sections
+        self._update_class_performance_ui(data['class_performance'])
+        self._update_gender_summary_ui(data['gender_summary'], data['settings']['show_gender_summary'])
+        self._update_division_summary_ui(data['division_summary'])
+        self._update_top_bottom_students_ui(data['top_students'], data['bottom_students'])
+        self._update_subject_performance_ui(data['subject_performance'])
+
+        # Expand tables to show all rows (disable internal scrolling)
+        self._expand_tables([
+            self.table, self.gender_table, self.division_table,
+            self.top_students_table, self.bottom_students_table,
+            self.subject_perf_table, self.subject_ranking_table
+        ])
+
+    def _expand_tables(self, tables):
+        """Set table heights so all rows are visible and disable internal scrollbars."""
+        for t in tables:
+            # Disable internal scrollbars
+            t.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+            t.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+
+            header_h = t.horizontalHeader().height() if t.horizontalHeader() else 0
+            # If no rows, still show one row height
+            rows = t.rowCount()
+            row_h = t.verticalHeader().defaultSectionSize() if t.verticalHeader() else 20
+            total_h = header_h + max(1, rows) * row_h + 8
+            # Cap very large heights to avoid runaway windows, allow scroll area/window to handle if needed
+            max_allowed = 800 if t == self.table else 400
+            total_h = min(total_h, max_allowed)
+            if t == self.table: t.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+            t.setMinimumHeight(total_h)
+            t.setMaximumHeight(total_h)
+
+    def _update_class_performance_ui(self, class_performance):
+        self.card_widgets['total_students'].setText(str(class_performance['total_students']))
+        self.card_widgets['class_avg'].setText(f"{class_performance['class_average']}%")
+        self.card_widgets['pass_rate'].setText(f"{class_performance['pass_rate']}%")
+        self.card_widgets['fail_rate'].setText(f"{class_performance['fail_rate']}%")
+        self.card_widgets['high_avg'].setText(f"{class_performance['highest_average']}%")
+        self.card_widgets['low_avg'].setText(f"{class_performance['lowest_average']}%")
+        
+        self.p_students.setText(f"Students: {class_performance['total_students']}")
+        self.p_avg.setText(f"Class Avg: {class_performance['class_average']}%")
+        self.p_high.setText(f"Highest: {class_performance['highest_average']}%")
+        self.p_low.setText(f"Lowest: {class_performance['lowest_average']}%")
+
+    def _update_gender_summary_ui(self, gender_summary, show_gender_summary):
+        self.gender_summary_group.setVisible(show_gender_summary)
+        if not show_gender_summary: return
+
+        self.gender_table.setRowCount(3)
+        self.gender_table.setItem(0, 0, QTableWidgetItem("Male"))
+        self.gender_table.setItem(0, 1, QTableWidgetItem(str(gender_summary['Male'])))
+        self.gender_table.setItem(1, 0, QTableWidgetItem("Female"))
+        self.gender_table.setItem(1, 1, QTableWidgetItem(str(gender_summary['Female'])))
+        self.gender_table.setItem(2, 0, QTableWidgetItem("Total"))
+        self.gender_table.setItem(2, 1, QTableWidgetItem(str(gender_summary['Total'])))
+        self.gender_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+
+    def _update_division_summary_ui(self, division_summary):
+        self.division_table.setRowCount(len(division_summary))
+        for r_idx, (div, count) in enumerate(division_summary.items()):
+            self.division_table.setItem(r_idx, 0, QTableWidgetItem(div))
+            self.division_table.setItem(r_idx, 1, QTableWidgetItem(str(count)))
+        self.division_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+
+    def _update_top_bottom_students_ui(self, top_students, bottom_students):
+        # Top 10
+        self.top_students_table.setRowCount(len(top_students))
+        for r_idx, s in enumerate(top_students):
+            self.top_students_table.setItem(r_idx, 0, QTableWidgetItem(str(s['position'])))
+            self.top_students_table.setItem(r_idx, 1, QTableWidgetItem(s['admission']))
+            self.top_students_table.setItem(r_idx, 2, QTableWidgetItem(s['name']))
+            self.top_students_table.setItem(r_idx, 3, QTableWidgetItem(str(s['average'])))
+            self.top_students_table.setItem(r_idx, 4, QTableWidgetItem(str(s['division'] if s['division'] else '-')))
+        self.top_students_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
+        self.top_students_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch) # Name column

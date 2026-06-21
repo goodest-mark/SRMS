@@ -1,0 +1,300 @@
+from PySide6.QtWidgets import (
+    QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QComboBox, 
+    QLabel, QTableWidget, QTableWidgetItem, QHeaderView, QGridLayout,
+    QMessageBox, QGroupBox, QAbstractItemView, QFileDialog, QScrollArea
+)
+from PySide6.QtCore import Qt
+
+from database import connect
+from system_state import SystemState
+from event_bus import EventBus
+from settings_page import get_setting # Import get_setting
+from security_settings import get_school_profile_from_db
+from grade_utils import get_grade, get_points # Needed for subject performance analysis
+
+from PySide6.QtWidgets import QFrame
+from class_utils import get_classes
+from ranking_engine import compute_student_scores
+import broadsheet_export
+from datetime import datetime # For generated date
+
+class BroadsheetPage(QWidget):
+    def __init__(self):
+        super().__init__()
+        self.all_broadsheet_data = None # To store computed data for export
+        self.layout = QVBoxLayout(self)
+        
+        title = QLabel("ACADEMIC BROADSHEET MODULE")
+        title.setStyleSheet("font-size: 20px; font-weight: bold; margin-bottom: 10px;")
+        self.layout.addWidget(title)
+
+        # =========================
+        # FILTERS
+        # =========================
+        filters_group = QGroupBox("Context Filters")
+        filters_layout = QHBoxLayout(filters_group)
+
+        self.year_box = QComboBox()
+        self.year_box.currentIndexChanged.connect(self.load_terms)
+        
+        self.term_box = QComboBox()
+        self.term_box.currentIndexChanged.connect(self.load_exams)
+
+        self.exam_box = QComboBox()
+        
+        self.class_box = QComboBox()
+        self.class_box.addItems(get_classes())
+
+        filters_layout.addWidget(QLabel("Year:"))
+        filters_layout.addWidget(self.year_box)
+        filters_layout.addWidget(QLabel("Term:"))
+        filters_layout.addWidget(self.term_box)
+        filters_layout.addWidget(QLabel("Exam:"))
+        filters_layout.addWidget(self.exam_box)
+        filters_layout.addWidget(QLabel("Class:"))
+        filters_layout.addWidget(self.class_box)
+        filters_layout.addStretch()
+
+        self.layout.addWidget(filters_group)
+
+        # =========================
+        # ACTIONS
+        # =========================
+        actions_layout = QHBoxLayout()
+
+        self.preview_btn = QPushButton("PREVIEW")
+        self.preview_btn.clicked.connect(self.preview_broadsheet)
+        self.preview_btn.setStyleSheet("background-color: #3b82f6; color: white; font-weight: bold; min-width: 120px;")
+        
+        self.excel_btn = QPushButton("EXPORT EXCEL")
+        self.excel_btn.clicked.connect(self.export_excel)
+        
+        self.pdf_btn = QPushButton("EXPORT PDF")
+        self.pdf_btn.clicked.connect(self.export_pdf)
+
+        actions_layout.addWidget(self.preview_btn)
+        actions_layout.addWidget(self.excel_btn)
+        actions_layout.addWidget(self.pdf_btn)
+        actions_layout.addStretch()
+        
+        self.layout.addLayout(actions_layout)
+
+        # =========================
+        # ANALYTICS & SUMMARIES (Scrollable Area)
+        # ======================================================================
+        self.scroll_area = QScrollArea()
+        self.scroll_area.setWidgetResizable(True)
+        self.scroll_content = QWidget()
+        self.scroll_layout = QVBoxLayout(self.scroll_content)
+        self.scroll_area.setWidget(self.scroll_content)
+        self.layout.addWidget(self.scroll_area)
+        
+        self.card_style = """
+            QFrame {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 rgba(30, 41, 59, 0.8), stop:1 rgba(15, 23, 42, 0.9));
+                border: 1px solid rgba(255, 255, 255, 0.1);
+                border-radius: 20px;
+            }
+            QLabel { background: transparent; }
+        """
+
+        # SECTION 2 - EXECUTIVE ANALYTICS CARDS
+        self.cards_container = QWidget()
+        self.cards_grid = QGridLayout(self.cards_container)
+        self.cards_grid.setContentsMargins(0, 10, 0, 10)
+        self.cards_grid.setSpacing(15)
+        
+        self.card_widgets = {}
+        metrics = [
+            ("Total Students", "total_students"), ("Class Average", "class_avg"), 
+            ("Pass Rate", "pass_rate"), ("Fail Rate", "fail_rate"),
+            ("Highest Average", "high_avg"), ("Lowest Average", "low_avg"),
+            ("Best Subject", "best_sub"), ("Worst Subject", "worst_sub")
+        ]
+        
+        for i, (label, key) in enumerate(metrics):
+            frame = QFrame()
+            frame.setStyleSheet(self.card_style)
+            flay = QVBoxLayout(frame)
+            val_lbl = QLabel("-")
+            val_lbl.setStyleSheet("font-size: 24px; font-weight: bold; color: #3b82f6;")
+            lab_lbl = QLabel(label.upper())
+            lab_lbl.setStyleSheet("font-size: 10px; color: #94a3b8; font-weight: bold;")
+            flay.addWidget(val_lbl, 0, Qt.AlignCenter)
+            flay.addWidget(lab_lbl, 0, Qt.AlignCenter)
+            self.card_widgets[key] = val_lbl
+            self.cards_grid.addWidget(frame, i // 4, i % 4)
+            
+        self.scroll_layout.addWidget(self.cards_container)
+
+        # SECTION 3 - SUMMARY PANELS (Row of 3)
+        summary_panels_layout = QHBoxLayout()
+        
+        # Panel A: Gender
+        self.gender_summary_group = QGroupBox("Gender Summary")
+        gender_summary_layout = QVBoxLayout(self.gender_summary_group)
+        self.gender_table = QTableWidget()
+        self.gender_table.setColumnCount(2)
+        self.gender_table.setHorizontalHeaderLabels(["Gender", "Count"])
+        self.gender_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.gender_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.gender_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        gender_summary_layout.addWidget(self.gender_table)
+        summary_panels_layout.addWidget(self.gender_summary_group)
+
+        # Panel B: Division
+        self.division_summary_group = QGroupBox("Division Summary")
+        division_summary_layout = QVBoxLayout(self.division_summary_group)
+        self.division_table = QTableWidget()
+        self.division_table.setColumnCount(2)
+        self.division_table.setHorizontalHeaderLabels(["Division", "Students"])
+        self.division_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.division_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.division_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        division_summary_layout.addWidget(self.division_table)
+        summary_panels_layout.addWidget(self.division_summary_group)
+
+        # Panel C: Performance Stats (Compact)
+        self.perf_stats_group = QGroupBox("Performance Summary")
+        perf_stats_layout = QGridLayout(self.perf_stats_group)
+        self.p_students = QLabel("Students: -")
+        self.p_avg = QLabel("Class Avg: -")
+        self.p_high = QLabel("Highest: -")
+        self.p_low = QLabel("Lowest: -")
+        perf_stats_layout.addWidget(self.p_students, 0, 0)
+        perf_stats_layout.addWidget(self.p_avg, 0, 1)
+        perf_stats_layout.addWidget(self.p_high, 1, 0)
+        perf_stats_layout.addWidget(self.p_low, 1, 1)
+        summary_panels_layout.addWidget(self.perf_stats_group)
+
+        self.scroll_layout.addLayout(summary_panels_layout)
+
+        # 4. TOP 10 STUDENTS
+        self.top_students_group = QGroupBox("Top 10 Students")
+        top_students_layout = QVBoxLayout(self.top_students_group)
+        self.top_students_table = QTableWidget()
+        self.top_students_table.setColumnCount(5)
+        self.top_students_table.setHorizontalHeaderLabels(["Pos", "Adm No", "Name", "Avg", "Div"])
+        self.top_students_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.top_students_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.top_students_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        top_students_layout.addWidget(self.top_students_table)
+        self.scroll_layout.addWidget(self.top_students_group)
+
+        # 5. BOTTOM 10 STUDENTS
+        self.bottom_students_group = QGroupBox("Bottom 10 Students")
+        bottom_students_layout = QVBoxLayout(self.bottom_students_group)
+        self.bottom_students_table = QTableWidget()
+        self.bottom_students_table.setColumnCount(5)
+        self.bottom_students_table.setHorizontalHeaderLabels(["Pos", "Adm No", "Name", "Avg", "Div"])
+        self.bottom_students_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.bottom_students_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.bottom_students_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        bottom_students_layout.addWidget(self.bottom_students_table)
+        self.scroll_layout.addWidget(self.bottom_students_group)
+
+        # 6. SUBJECT PERFORMANCE ANALYSIS
+        self.subject_perf_group = QGroupBox("Subject Performance Analysis")
+        subject_perf_layout = QVBoxLayout(self.subject_perf_group)
+        self.subject_perf_table = QTableWidget()
+        self.subject_perf_table.setColumnCount(4)
+        self.subject_perf_table.setHorizontalHeaderLabels(["Subject", "Average", "Passes", "Fails"])
+        self.subject_perf_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.subject_perf_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.subject_perf_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        subject_perf_layout.addWidget(self.subject_perf_table)
+        self.scroll_layout.addWidget(self.subject_perf_group)
+
+        # 7. FULL BROADSHEET
+        self.full_broadsheet_group = QGroupBox("Full Broadsheet Table")
+        full_broadsheet_layout = QVBoxLayout(self.full_broadsheet_group)
+        self.table = QTableWidget()
+        self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.table.setAlternatingRowColors(True)
+        self.table.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        full_broadsheet_layout.addWidget(self.table)
+        self.scroll_layout.addWidget(self.full_broadsheet_group)
+
+        # =========================
+        # FOOTER SUMMARY
+        # =========================
+        self.footer = QLabel("Ready to preview...")
+        self.footer.setStyleSheet("background: #1f2937; color: #10b981; padding: 10px; font-weight: bold; border-radius: 4px;")
+        self.layout.addWidget(self.footer)
+
+        # Initial Load
+        self.load_years()
+        EventBus.subscribe("LEVEL_CHANGED", self.refresh_all)
+
+    def refresh_all(self):
+        self.load_years()
+        self.class_box.clear()
+        self.class_box.addItems(get_classes())
+
+    def load_years(self):
+        self.year_box.blockSignals(True)
+        self.year_box.clear()
+        conn = connect()
+        cur = conn.cursor()
+        cur.execute("SELECT id, year_name FROM academic_years ORDER BY year_name DESC")
+        for row in cur.fetchall():
+            self.year_box.addItem(row[1], row[0])
+        conn.close()
+        self.year_box.blockSignals(False)
+        self.load_terms()
+
+    def load_terms(self):
+        self.term_box.blockSignals(True)
+        self.term_box.clear()
+        year_id = self.year_box.currentData()
+        if year_id:
+            conn = connect()
+            cur = conn.cursor()
+            cur.execute("SELECT id, term_name FROM terms WHERE academic_year_id=? ORDER BY term_name", (year_id,))
+            for row in cur.fetchall():
+                self.term_box.addItem(row[1], row[0])
+            conn.close()
+        self.term_box.blockSignals(False)
+        self.load_exams()
+
+    def load_exams(self):
+        self.exam_box.clear()
+        term_id = self.term_box.currentData()
+        level = SystemState.get_level()
+        if term_id:
+            conn = connect()
+            cur = conn.cursor()
+            cur.execute("SELECT id, exam_name FROM exams WHERE term_id=? AND level=? ORDER BY id", (term_id, level))
+            for row in cur.fetchall():
+                self.exam_box.addItem(row[1], row[0])
+            conn.close()
+
+    def get_broadsheet_data(self):
+        # This method is now responsible for gathering ALL data needed for UI and export
+        exam_id = self.exam_box.currentData()
+        class_name = self.class_box.currentText()
+        level = SystemState.get_level()
+
+        if not (exam_id and class_name):
+            return None # Return early if essential filters are missing
+
+        # 1. Get Ranking Summary (Position, Points, Division)
+        ranking_summary = compute_student_scores(level, exam_id)
+        # Filter ranking by class in-memory (No N+1 queries)
+        ranking_summary = [s for s in ranking_summary if s.get('class') == class_name]
+        
+        if not ranking_summary:
+            return None # No students in this class for the selected exam
+
+        # 2. Get all enrolled subjects for this class/term
+        conn = connect()
+        cur = conn.cursor()
+        
+        cur.execute("""
+            SELECT academic_year_id FROM terms WHERE id = (SELECT term_id FROM exams WHERE id=?)
+        """, (exam_id,))
+        year_row = cur.fetchone()
+        if not year_row:
+            conn.close()
+            return None
+        year_id = year_row[0]

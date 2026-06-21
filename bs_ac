@@ -1,0 +1,44 @@
+
+        # Bottom 10
+        self.bottom_students_table.setRowCount(len(bottom_students))
+        for r_idx, s in enumerate(bottom_students):
+            self.bottom_students_table.setItem(r_idx, 0, QTableWidgetItem(str(s['position'])))
+            self.bottom_students_table.setItem(r_idx, 1, QTableWidgetItem(s['admission']))
+            self.bottom_students_table.setItem(r_idx, 2, QTableWidgetItem(s['name']))
+            self.bottom_students_table.setItem(r_idx, 3, QTableWidgetItem(str(s['average'])))
+            self.bottom_students_table.setItem(r_idx, 4, QTableWidgetItem(str(s['division'] if s['division'] else '-')))
+        self.bottom_students_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
+        self.bottom_students_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch) # Name column
+
+    def _update_subject_performance_ui(self, subject_performance):
+        self.subject_perf_table.setRowCount(len(subject_performance))
+        ranking = sorted(subject_performance.items(), key=lambda it: it[1]['average'], reverse=True)
+
+        for r_idx, (sub_name, stats) in enumerate(ranking):
+            self.subject_perf_table.setItem(r_idx, 0, QTableWidgetItem(str(r_idx+1)))
+            self.subject_perf_table.setItem(r_idx, 1, QTableWidgetItem(sub_name))
+            self.subject_perf_table.setItem(r_idx, 2, QTableWidgetItem(str(stats['average'])))
+            self.subject_perf_table.setItem(r_idx, 3, QTableWidgetItem(str(stats['passes'])))
+            self.subject_perf_table.setItem(r_idx, 4, QTableWidgetItem(str(stats['fails'])))
+            
+        if ranking:
+            self.card_widgets['best_sub'].setText(ranking[0][0][:10])
+            self.card_widgets['best_sub'].setToolTip(ranking[0][0])
+            self.card_widgets['worst_sub'].setText(ranking[-1][0][:10])
+            self.card_widgets['worst_sub'].setToolTip(ranking[-1][0])
+
+        self.subject_perf_table.setColumnCount(5)
+        self.subject_perf_table.setHorizontalHeaderLabels(["Rank", "Subject", "Average", "Passes", "Fails"])
+        self.subject_perf_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+
+    def export_excel(self):
+        if not self.all_broadsheet_data:
+            QMessageBox.warning(self, "No Data", "Please preview the broadsheet first.")
+            return
+        broadsheet_export.to_excel(self, self.all_broadsheet_data)
+
+    def export_pdf(self):
+        if not self.all_broadsheet_data:
+            QMessageBox.warning(self, "No Data", "Please preview the broadsheet first.")
+            return
+        broadsheet_export.to_pdf(self, self.all_broadsheet_data)
