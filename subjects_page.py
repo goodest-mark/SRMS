@@ -5,16 +5,15 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QPushButton,
     QTableWidget,
-    QTableWidgetItem,
     QComboBox,
     QMessageBox,
-    QHeaderView,
-    QAbstractItemView
 )
 import openpyxl
 import excel_utils
 
-from database import connect
+from db_utils import get_cursor, fetch_all
+from table_utils import setup_table, populate_table
+from ui_helpers import confirm_action, show_error
 from system_state import SystemState
 from event_bus import EventBus
 from subject_dialog import SubjectDialog
@@ -99,33 +98,8 @@ class SubjectsPage(QWidget):
         # =====================
 
         self.table = QTableWidget()
-
-        self.table.setColumnCount(4)
-
-        self.table.setHorizontalHeaderLabels([
-            "ID",
-            "Subject",
-            "Level",
-            "Type"
-        ])
-
-        self.table.setSelectionBehavior(
-            QAbstractItemView.SelectRows
-        )
-
-        self.table.setEditTriggers(
-            QAbstractItemView.NoEditTriggers
-        )
-
-        self.table.doubleClicked.connect(
-            self.edit_subject
-        )
-
-        header = self.table.horizontalHeader()
-
-        header.setSectionResizeMode(
-            QHeaderView.Stretch
-        )
+        setup_table(self.table, ["ID", "Subject", "Level", "Type"])
+        self.table.doubleClicked.connect(self.edit_subject)
 
         self.layout.addWidget(
             self.table
@@ -176,69 +150,25 @@ class SubjectsPage(QWidget):
 
     def load(self):
 
-        conn = connect()
-        cur = conn.cursor()
-
         level = SystemState.get_level()
-
-        search = (
-            self.search.text()
-            .strip()
-        )
+        search = self.search.text().strip()
 
         if search:
-
-            cur.execute("""
-                SELECT
-                    id,
-                    subject_name,
-                    level,
-                    subject_type
+            rows = fetch_all("""
+                SELECT id, subject_name, level, subject_type
                 FROM subjects
-                WHERE level=?
-                AND subject_name LIKE ?
+                WHERE level=? AND subject_name LIKE ?
                 ORDER BY subject_name
-            """, (
-                level,
-                f"%{search}%"
-            ))
-
+            """, (level, f"%{search}%"))
         else:
-
-            cur.execute("""
-                SELECT
-                    id,
-                    subject_name,
-                    level,
-                    subject_type
+            rows = fetch_all("""
+                SELECT id, subject_name, level, subject_type
                 FROM subjects
                 WHERE level=?
                 ORDER BY subject_name
-            """, (
-                level,
-            ))
+            """, (level,))
 
-        rows = cur.fetchall()
-
-        conn.close()
-
-        self.table.setRowCount(
-            len(rows)
-        )
-
-        for r, row in enumerate(rows):
-
-            for c, value in enumerate(row):
-
-                item = QTableWidgetItem(
-                    str(value)
-                )
-
-                self.table.setItem(
-                    r,
-                    c,
-                    item
-                )
+        populate_table(self.table, rows)
 
     # =====================
     # ADD SUBJECT
@@ -246,54 +176,24 @@ class SubjectsPage(QWidget):
 
     def add_subject(self):
 
-        name = (
-            self.name.text()
-            .strip()
-        )
+        name = self.name.text().strip()
 
         if not name:
-
-            QMessageBox.warning(
-                self,
-                "Error",
-                "Enter subject name"
-            )
-
+            show_error(self, "Enter subject name")
             return
 
-        conn = connect()
-        cur = conn.cursor()
-
         try:
-
-            cur.execute("""
-                INSERT INTO subjects(
-                    subject_name,
-                    level,
-                    subject_type
-                )
-                VALUES (?, ?, ?)
-            """, (
-                name,
-                SystemState.get_level(),
-                self.subject_type.currentText()
-            ))
-
-            conn.commit()
+            with get_cursor(commit=True) as cur:
+                cur.execute("""
+                    INSERT INTO subjects(subject_name, level, subject_type)
+                    VALUES (?, ?, ?)
+                """, (name, SystemState.get_level(), self.subject_type.currentText()))
 
             self.name.clear()
-
             self.load()
 
         except Exception as e:
-
-            QMessageBox.warning(
-                self,
-                "Error",
-                str(e)
-            )
-
-        conn.close()
+            show_error(self, str(e))
 
     # =====================
     # DELETE
@@ -306,34 +206,13 @@ class SubjectsPage(QWidget):
         if row < 0:
             return
 
-        subject_id = self.table.item(
-            row,
-            0
-        ).text()
+        subject_id = self.table.item(row, 0).text()
 
-        reply = QMessageBox.question(
-            self,
-            "Delete",
-            "Delete selected subject?",
-            QMessageBox.Yes |
-            QMessageBox.No
-        )
-
-        if reply != QMessageBox.Yes:
+        if not confirm_action(self, "Delete", "Delete selected subject?"):
             return
 
-        conn = connect()
-        cur = conn.cursor()
-
-        cur.execute("""
-            DELETE FROM subjects
-            WHERE id=?
-        """, (
-            subject_id,
-        ))
-
-        conn.commit()
-        conn.close()
+        with get_cursor(commit=True) as cur:
+            cur.execute("DELETE FROM subjects WHERE id=?", (subject_id,))
 
         self.load()
 
@@ -376,12 +255,8 @@ class SubjectsPage(QWidget):
         )
 
     def export_excel(self):
-        conn = connect()
-        cur = conn.cursor()
         level = SystemState.get_level()
-        cur.execute("SELECT subject_name, subject_type FROM subjects WHERE level=?", (level,))
-        data = cur.fetchall()
-        conn.close()
+        data = fetch_all("SELECT subject_name, subject_type FROM subjects WHERE level=?", (level,))
         
         excel_utils.export_to_excel(
             self, 
@@ -398,31 +273,26 @@ class SubjectsPage(QWidget):
             wb = openpyxl.load_workbook(path, data_only=True)
             sheet = wb.active
             rows = list(sheet.iter_rows(min_row=12, values_only=True))
-            
-            conn = connect()
-            cur = conn.cursor()
             level = SystemState.get_level()
             
             imported = 0
-            for row in rows:
-                if not row or len(row) < 2 or not row[0]: continue
-                
-                name = row[0]
-                stype = row[1]
-                
-                try:
-                    cur.execute("""
-                        INSERT INTO subjects (subject_name, level, subject_type)
-                        VALUES (?, ?, ?)
-                        ON CONFLICT(subject_name, level) DO UPDATE SET
-                            subject_type=excluded.subject_type
-                    """, (str(name), level, str(stype)))
-                    imported += 1
-                except:
-                    continue
+            with get_cursor(commit=True) as cur:
+                for row in rows:
+                    if not row or len(row) < 2 or not row[0]: continue
                     
-            conn.commit()
-            conn.close()
+                    name = row[0]
+                    stype = row[1]
+                    
+                    try:
+                        cur.execute("""
+                            INSERT INTO subjects (subject_name, level, subject_type)
+                            VALUES (?, ?, ?)
+                            ON CONFLICT(subject_name, level) DO UPDATE SET
+                                subject_type=excluded.subject_type
+                        """, (str(name), level, str(stype)))
+                        imported += 1
+                    except:
+                        continue
             
             self.load()
             QMessageBox.information(self, "Import Complete", f"Imported {imported} subjects.")

@@ -9,7 +9,7 @@ from PySide6.QtWidgets import (
     QGridLayout
 )
 
-from database import connect
+from db_utils import get_cursor
 
 
 class GlassCard(QFrame):
@@ -397,147 +397,66 @@ class DashboardHome(QWidget):
 
     def load_dashboard(self):
 
-        conn = connect()
-        cur = conn.cursor()
-
         try:
+            with get_cursor() as cur:
+                cur.execute("SELECT COUNT(*) FROM students")
+                students = cur.fetchone()[0]
 
-            cur.execute(
-                "SELECT COUNT(*) FROM students"
-            )
-            students = cur.fetchone()[0]
+                cur.execute("SELECT COUNT(*) FROM teachers")
+                teachers = cur.fetchone()[0]
 
-            cur.execute(
-                "SELECT COUNT(*) FROM teachers"
-            )
-            teachers = cur.fetchone()[0]
+                cur.execute("SELECT COUNT(*) FROM subjects")
+                subjects = cur.fetchone()[0]
 
-            cur.execute(
-                "SELECT COUNT(*) FROM subjects"
-            )
-            subjects = cur.fetchone()[0]
+                cur.execute("SELECT COUNT(DISTINCT class) FROM students")
+                classes = cur.fetchone()[0]
 
-            cur.execute(
-                "SELECT COUNT(DISTINCT class) FROM students"
-            )
-            classes = cur.fetchone()[0]
+                cur.execute("SELECT COUNT(*) FROM exams")
+                exams = cur.fetchone()[0]
 
-            cur.execute(
-                "SELECT COUNT(*) FROM exams"
-            )
-            exams = cur.fetchone()[0]
+                cur.execute("SELECT COUNT(*) FROM results")
+                results = cur.fetchone()[0]
 
-            cur.execute(
-                "SELECT COUNT(*) FROM results"
-            )
-            results = cur.fetchone()[0]
+                cur.execute("SELECT COUNT(*) FROM students WHERE gender='Male'")
+                males = cur.fetchone()[0]
 
-            cur.execute("""
-                SELECT COUNT(*)
-                FROM students
-                WHERE gender='Male'
-            """)
-            males = cur.fetchone()[0]
+                cur.execute("SELECT COUNT(*) FROM students WHERE gender='Female'")
+                females = cur.fetchone()[0]
 
-            cur.execute("""
-                SELECT COUNT(*)
-                FROM students
-                WHERE gender='Female'
-            """)
-            females = cur.fetchone()[0]
+                cur.execute("SELECT COUNT(*) FROM exams WHERE status='OPEN'")
+                open_exams = cur.fetchone()[0]
 
-            cur.execute("""
-                SELECT COUNT(*)
-                FROM exams
-                WHERE status='OPEN'
-            """)
-            open_exams = cur.fetchone()[0]
+                cur.execute("""
+                    SELECT school_name, head_teacher, academic_master, school_phone, school_email
+                    FROM school_profile LIMIT 1
+                """)
+                row = cur.fetchone()
 
-            cur.execute("""
-                SELECT
-                    school_name,
-                    head_teacher,
-                    academic_master,
-                    school_phone,
-                    school_email
-                FROM school_profile
-                LIMIT 1
-            """)
+                if row:
+                    school_name, head, academic, phone, email = row
+                    self.school_lbl.setText(school_name)
+                    self.school_info_lbl.setText(
+                        f"Head Teacher: {head}\n\n"
+                        f"Academic Master: {academic}\n\n"
+                        f"Phone: {phone}\n\n"
+                        f"Email: {email}"
+                    )
 
-            row = cur.fetchone()
+                cur.execute("SELECT exam_name FROM exams WHERE status='OPEN' LIMIT 1")
+                exam = cur.fetchone()
+                if exam:
+                    self.exam_lbl.setText(f"Active Exam: {exam[0]}")
 
-            if row:
-
-                school_name, head, academic, phone, email = row
-
-                self.school_lbl.setText(
-                    school_name
-                )
-
-                self.school_info_lbl.setText(
-                    f"Head Teacher: {head}\n\n"
-                    f"Academic Master: {academic}\n\n"
-                    f"Phone: {phone}\n\n"
-                    f"Email: {email}"
-                )
-
-            cur.execute("""
-                SELECT exam_name
-                FROM exams
-                WHERE status='OPEN'
-                LIMIT 1
-            """)
-
-            exam = cur.fetchone()
-
-            if exam:
-                self.exam_lbl.setText(
-                    f"Active Exam: {exam[0]}"
-                )
-
-            self.students_card.set_value(
-                students
-            )
-
-            self.teachers_card.set_value(
-                teachers
-            )
-
-            self.subjects_card.set_value(
-                subjects
-            )
-
-            self.classes_card.set_value(
-                classes
-            )
-
-            self.exams_card.set_value(
-                exams
-            )
-
-            self.results_card.set_value(
-                results
-            )
-
-            self.male_card.set_value(
-                males
-            )
-
-            self.female_card.set_value(
-                females
-            )
-
-            self.open_exam_card.set_value(
-                open_exams
-            )
+            self.students_card.set_value(students)
+            self.teachers_card.set_value(teachers)
+            self.subjects_card.set_value(subjects)
+            self.classes_card.set_value(classes)
+            self.exams_card.set_value(exams)
+            self.results_card.set_value(results)
+            self.male_card.set_value(males)
+            self.female_card.set_value(females)
+            self.open_exam_card.set_value(open_exams)
 
         except Exception as error:
-
-            print(
-                "Dashboard Error:",
-                error
-            )
-
-        finally:
-            conn.close()
+            print("Dashboard Error:", error)
 

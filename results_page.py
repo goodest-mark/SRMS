@@ -21,7 +21,7 @@ import openpyxl
 import excel_utils
 
 from class_utils import get_classes
-from database import connect
+from db_utils import get_cursor, fetch_all, get_exam_context
 from event_bus import EventBus
 from system_state import SystemState
 
@@ -309,19 +309,12 @@ class ResultsPage(QWidget):
         current_exam_id = self.exam.currentData()
         level = SystemState.get_level()
 
-        conn = connect()
-        try:
-            cur = conn.cursor()
-            cur.execute("""
-                SELECT id, exam_name
-                FROM exams
-                WHERE level=?
-                  AND status='OPEN'
-                ORDER BY id
-            """, (level,))
-            rows = cur.fetchall()
-        finally:
-            conn.close()
+        rows = fetch_all("""
+            SELECT id, exam_name
+            FROM exams
+            WHERE level=? AND status='OPEN'
+            ORDER BY id
+        """, (level,))
 
         self.exam.blockSignals(True)
         self.exam.clear()
@@ -365,48 +358,31 @@ class ResultsPage(QWidget):
         current_subject_full = self.subject.currentText()
         current_subject_base = current_subject_full.split(" (")[0]
 
-        conn = connect()
-        try:
-            cur = conn.cursor()
+        context = get_exam_context(exam_id)
+        if not context:
+            self.subject.clear()
+            self._clear_table()
+            return
             
-            # Derive academic context
-            cur.execute("""
-                SELECT t.academic_year_id, e.term_id
-                FROM exams e
-                JOIN terms t ON e.term_id = t.id
-                WHERE e.id = ?
-            """, (exam_id,))
-            context = cur.fetchone()
-            
-            if not context:
-                self.subject.clear()
-                self._clear_table()
-                return
-                
-            year_id, term_id = context
+        year_id, term_id = context
 
-            # V4.1: Load subjects with completion indicators
-            cur.execute("""
-                SELECT 
-                    e.subject_name,
-                    COUNT(DISTINCT e.admission_no) as expected,
-                    (SELECT COUNT(*) FROM results r 
-                     JOIN students s2 ON s2.admission_no = r.admission_no
-                     WHERE r.subject_name = e.subject_name 
-                       AND r.exam_id = ?
-                       AND s2.class = ?
-                       AND s2.level = ?) as entered
-                FROM enrollments e
-                JOIN students s ON s.admission_no = e.admission_no
-                WHERE s.class=? AND s.level=?
-                  AND e.academic_year_id=? AND e.term_id=?
-                GROUP BY e.subject_name
-                ORDER BY e.subject_name
-            """, (exam_id, class_name, level, class_name, level, year_id, term_id))
-            
-            rows = cur.fetchall()
-        finally:
-            conn.close()
+        rows = fetch_all("""
+            SELECT 
+                e.subject_name,
+                COUNT(DISTINCT e.admission_no) as expected,
+                (SELECT COUNT(*) FROM results r 
+                 JOIN students s2 ON s2.admission_no = r.admission_no
+                 WHERE r.subject_name = e.subject_name 
+                   AND r.exam_id = ?
+                   AND s2.class = ?
+                   AND s2.level = ?) as entered
+            FROM enrollments e
+            JOIN students s ON s.admission_no = e.admission_no
+            WHERE s.class=? AND s.level=?
+              AND e.academic_year_id=? AND e.term_id=?
+            GROUP BY e.subject_name
+            ORDER BY e.subject_name
+        """, (exam_id, class_name, level, class_name, level, year_id, term_id))
 
         self.subject.blockSignals(True)
         self.subject.clear()
@@ -440,53 +416,31 @@ class ResultsPage(QWidget):
             self._clear_table()
             return
 
-        conn = connect()
-        try:
-            cur = conn.cursor()
+        context = get_exam_context(exam_id)
+        if not context:
+            self._clear_table()
+            return
             
-            # Derive context
-            cur.execute("""
-                SELECT t.academic_year_id, e.term_id
-                FROM exams e
-                JOIN terms t ON e.term_id = t.id
-                WHERE e.id = ?
-            """, (exam_id,))
-            context = cur.fetchone()
-            
-            if not context:
-                self._clear_table()
-                return
-                
-            year_id, term_id = context
+        year_id, term_id = context
 
-            cur.execute("""
-                SELECT
-                    s.admission_no,
-                    s.full_name,
-                    r.marks
-                FROM enrollments e
-                JOIN students s ON s.admission_no = e.admission_no
-                LEFT JOIN results r ON r.admission_no = s.admission_no
-                    AND r.subject_name = e.subject_name
-                    AND r.exam_id = ?
-                WHERE
-                    e.subject_name = ?
-                AND s.class = ?
-                AND s.level = ?
-                AND e.academic_year_id = ?
-                AND e.term_id = ?
-                ORDER BY s.full_name
-            """, (
-                exam_id,
-                subject_name,
-                class_name,
-                level,
-                year_id,
-                term_id
-            ))
-            rows = cur.fetchall()
-        finally:
-            conn.close()
+        rows = fetch_all("""
+            SELECT
+                s.admission_no,
+                s.full_name,
+                r.marks
+            FROM enrollments e
+            JOIN students s ON s.admission_no = e.admission_no
+            LEFT JOIN results r ON r.admission_no = s.admission_no
+                AND r.subject_name = e.subject_name
+                AND r.exam_id = ?
+            WHERE
+                e.subject_name = ?
+            AND s.class = ?
+            AND s.level = ?
+            AND e.academic_year_id = ?
+            AND e.term_id = ?
+            ORDER BY s.full_name
+        """, (exam_id, subject_name, class_name, level, year_id, term_id))
 
         self.loading_table = True
         self.table.setRowCount(len(rows))
@@ -549,23 +503,18 @@ class ResultsPage(QWidget):
             QMessageBox.warning(self, "Invalid Marks", f"Check row(s): {', '.join(map(str, invalid_rows))}")
             return
 
-        conn = connect()
         try:
-            cur = conn.cursor()
-            for admission_no, marks in marks_to_save:
-                cur.execute("""
-                    INSERT INTO results (admission_no, subject_name, marks, exam_id)
-                    VALUES (?, ?, ?, ?)
-                    ON CONFLICT(admission_no, subject_name, exam_id) 
-                    DO UPDATE SET marks = excluded.marks
-                """, (admission_no, subject_name, marks, exam_id))
-            conn.commit()
+            with get_cursor(commit=True) as cur:
+                for admission_no, marks in marks_to_save:
+                    cur.execute("""
+                        INSERT INTO results (admission_no, subject_name, marks, exam_id)
+                        VALUES (?, ?, ?, ?)
+                        ON CONFLICT(admission_no, subject_name, exam_id) 
+                        DO UPDATE SET marks = excluded.marks
+                    """, (admission_no, subject_name, marks, exam_id))
         except Exception as e:
-            conn.rollback()
             QMessageBox.critical(self, "Database Error", str(e))
             return
-        finally:
-            conn.close()
 
         # V4.1: Automatically refresh subject completion
         self.load_subjects()
@@ -622,49 +571,35 @@ class ResultsPage(QWidget):
             sheet = wb.active
             rows = list(sheet.iter_rows(min_row=12, values_only=True))
             
-            conn = connect()
-            cur = conn.cursor()
-            
-            # Context
-            cur.execute("""
-                SELECT t.academic_year_id, e.term_id 
-                FROM exams e 
-                JOIN terms t ON e.term_id = t.id 
-                WHERE e.id = ?
-            """, (exam_id,))
-            context = cur.fetchone()
+            context = get_exam_context(exam_id)
             if not context:
                 raise ValueError("Selected exam does not exist.")
             year_id, term_id = context
             
             imported = 0
-            for row in rows:
-                if not row or not row[0] or row[1] is None: continue
-                adm, marks = row
-                
-                # Check enrollment
-                cur.execute("""
-                    SELECT 1 FROM enrollments 
-                    WHERE admission_no=? AND subject_name=? AND academic_year_id=? AND term_id=?
-                """, (str(adm), subject_name, year_id, term_id))
-                
-                if cur.fetchone():
-                    try:
-                        cur.execute("""
-                            INSERT INTO results (admission_no, subject_name, marks, exam_id)
-                            VALUES (?, ?, ?, ?)
-                            ON CONFLICT(admission_no, subject_name, exam_id) DO UPDATE SET
-                                marks=excluded.marks
-                        """, (str(adm), subject_name, int(marks), exam_id))
-                        imported += 1
-                    except:
-                        continue
-                        
-            conn.commit()
-            conn.close()
+            with get_cursor(commit=True) as cur:
+                for row in rows:
+                    if not row or not row[0] or row[1] is None: continue
+                    adm, marks = row
+                    
+                    cur.execute("""
+                        SELECT 1 FROM enrollments 
+                        WHERE admission_no=? AND subject_name=? AND academic_year_id=? AND term_id=?
+                    """, (str(adm), subject_name, year_id, term_id))
+                    
+                    if cur.fetchone():
+                        try:
+                            cur.execute("""
+                                INSERT INTO results (admission_no, subject_name, marks, exam_id)
+                                VALUES (?, ?, ?, ?)
+                                ON CONFLICT(admission_no, subject_name, exam_id) DO UPDATE SET
+                                    marks=excluded.marks
+                            """, (str(adm), subject_name, int(marks), exam_id))
+                            imported += 1
+                        except:
+                            continue
             
             self.load_students()
-            # V4.1 refresh
             self.load_subjects()
             EventBus.emit("RESULTS_UPDATED")
             QMessageBox.information(self, "Import Complete", f"Imported {imported} marks.")

@@ -4,13 +4,12 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QPushButton,
     QTableWidget,
-    QTableWidgetItem,
     QMessageBox,
-    QAbstractItemView,
-    QHeaderView
 )
 
-from database import connect
+from db_utils import get_cursor, fetch_all
+from table_utils import setup_table, populate_table
+from ui_helpers import confirm_action, show_error
 from event_bus import EventBus
 from security_settings import authorize_action
 from theme import APP_STYLE
@@ -70,31 +69,7 @@ class ExamsWindow(QWidget):
         top.addWidget(self.refresh_btn)
 
         self.table = QTableWidget()
-
-        self.table.setColumnCount(6)
-
-        self.table.setHorizontalHeaderLabels([
-            "ID",
-            "Exam",
-            "Term",
-            "Year",
-            "Level",
-            "Status"
-        ])
-
-        self.table.setSelectionBehavior(
-            QAbstractItemView.SelectRows
-        )
-
-        self.table.setEditTriggers(
-            QAbstractItemView.NoEditTriggers
-        )
-
-        header = self.table.horizontalHeader()
-
-        header.setSectionResizeMode(
-            QHeaderView.Stretch
-        )
+        setup_table(self.table, ["ID", "Exam", "Term", "Year", "Level", "Status"])
 
         layout.addLayout(top)
         layout.addWidget(self.table)
@@ -119,11 +94,9 @@ class ExamsWindow(QWidget):
 
     def load_data(self):
 
-        conn = connect()
-        cur = conn.cursor()
         level = SystemState.get_level()
 
-        cur.execute("""
+        rows = fetch_all("""
             SELECT
                 e.id,
                 e.exam_name,
@@ -132,77 +105,32 @@ class ExamsWindow(QWidget):
                 e.level,
                 e.status
             FROM exams e
-            JOIN terms t
-            ON e.term_id=t.id
-            JOIN academic_years a
-            ON t.academic_year_id=a.id
+            JOIN terms t ON e.term_id=t.id
+            JOIN academic_years a ON t.academic_year_id=a.id
             WHERE e.level=?
             ORDER BY e.id DESC
         """, (level,))
 
-        rows = cur.fetchall()
-
-        conn.close()
-
-        self.table.setRowCount(
-            len(rows)
-        )
-
-        for r, row in enumerate(rows):
-
-            for c, value in enumerate(row):
-
-                self.table.setItem(
-                    r,
-                    c,
-                    QTableWidgetItem(
-                        str(value)
-                    )
-                )
+        populate_table(self.table, rows)
 
     def delete_exam(self):
 
         row = self.table.currentRow()
 
         if row < 0:
-
-            QMessageBox.warning(
-                self,
-                "Error",
-                "Select exam first"
-            )
-
+            show_error(self, "Select exam first")
             return
 
-        exam_id = self.table.item(
-            row,
-            0
-        ).text()
+        exam_id = self.table.item(row, 0).text()
 
-        reply = QMessageBox.question(
-            self,
-            "Delete",
-            "Delete selected exam?",
-            QMessageBox.Yes |
-            QMessageBox.No
-        )
-
-        if reply != QMessageBox.Yes:
+        if not confirm_action(self, "Delete", "Delete selected exam?"):
             return
 
         if not authorize_action(self, "Delete Exam"):
             return
 
-        conn = connect()
-        cur = conn.cursor()
-
-        cur.execute(
-            "DELETE FROM exams WHERE id=?",
-            (exam_id,)
-        )
-
-        conn.commit()
-        conn.close()
+        with get_cursor(commit=True) as cur:
+            cur.execute("DELETE FROM exams WHERE id=?", (exam_id,))
 
         EventBus.emit("EXAMS_UPDATED")
 
@@ -213,51 +141,21 @@ class ExamsWindow(QWidget):
         if row < 0:
             return
 
-        exam_id = self.table.item(
-            row,
-            0
-        ).text()
+        exam_id = self.table.item(row, 0).text()
+        status = self.table.item(row, 5).text()
+        level = self.table.item(row, 4).text()
 
-        status = self.table.item(
-            row,
-            5
-        ).text()
+        new_status = "CLOSED" if status == "OPEN" else "OPEN"
 
-        level = self.table.item(
-            row,
-            4
-        ).text()
+        with get_cursor(commit=True) as cur:
+            if new_status == "OPEN":
+                cur.execute("""
+                    UPDATE exams SET status='CLOSED'
+                    WHERE level=? AND id<>? AND status='OPEN'
+                """, (level, exam_id))
 
-        new_status = "OPEN"
-
-        if status == "OPEN":
-            new_status = "CLOSED"
-
-        conn = connect()
-        cur = conn.cursor()
-
-        if new_status == "OPEN":
             cur.execute("""
-                UPDATE exams
-                SET status='CLOSED'
-                WHERE level=?
-                  AND id<>?
-                  AND status='OPEN'
-            """, (
-                level,
-                exam_id
-            ))
-
-        cur.execute("""
-            UPDATE exams
-            SET status=?
-            WHERE id=?
-        """, (
-            new_status,
-            exam_id
-        ))
-
-        conn.commit()
-        conn.close()
+                UPDATE exams SET status=? WHERE id=?
+            """, (new_status, exam_id))
 
         EventBus.emit("EXAMS_UPDATED")

@@ -16,7 +16,7 @@ from PySide6.QtCore import Qt
 
 import openpyxl
 import excel_utils
-from database import connect
+from db_utils import get_cursor, fetch_all
 from system_state import SystemState
 from event_bus import EventBus
 from class_utils import get_classes
@@ -176,12 +176,9 @@ class EnrollmentPage(QWidget):
     def load_years(self):
         self.year_box.blockSignals(True)
         self.year_box.clear()
-        conn = connect()
-        cur = conn.cursor()
-        cur.execute("SELECT id, year_name FROM academic_years ORDER BY year_name DESC")
-        for row in cur.fetchall():
+        rows = fetch_all("SELECT id, year_name FROM academic_years ORDER BY year_name DESC")
+        for row in rows:
             self.year_box.addItem(row[1], row[0])
-        conn.close()
         self.year_box.blockSignals(False)
         self.load_terms()
 
@@ -190,12 +187,9 @@ class EnrollmentPage(QWidget):
         self.term_box.clear()
         year_id = self.year_box.currentData()
         if year_id:
-            conn = connect()
-            cur = conn.cursor()
-            cur.execute("SELECT id, term_name FROM terms WHERE academic_year_id=? ORDER BY term_name", (year_id,))
-            for row in cur.fetchall():
+            rows = fetch_all("SELECT id, term_name FROM terms WHERE academic_year_id=? ORDER BY term_name", (year_id,))
+            for row in rows:
                 self.term_box.addItem(row[1], row[0])
-            conn.close()
         self.term_box.blockSignals(False)
 
     def load_students(self):
@@ -204,18 +198,15 @@ class EnrollmentPage(QWidget):
         class_name = self.class_box.currentText()
         
         if class_name and class_name != "-- Select Class --":
-            conn = connect()
-            cur = conn.cursor()
-            cur.execute("""
+            rows = fetch_all("""
                 SELECT admission_no, full_name 
                 FROM students 
                 WHERE class=? AND level=?
                 ORDER BY full_name
             """, (class_name, SystemState.get_level()))
             
-            for row in cur.fetchall():
+            for row in rows:
                 self.student_box.addItem(f"{row[1]} ({row[0]})", row[0])
-            conn.close()
         
         self.student_box.blockSignals(False)
         self.load_enrollment_data()
@@ -232,29 +223,19 @@ class EnrollmentPage(QWidget):
 
         level = SystemState.get_level()
         
-        conn = connect()
-        cur = conn.cursor()
-        
-        # Load Enrolled
-        cur.execute("""
+        enrolled = [r[0] for r in fetch_all("""
             SELECT subject_name 
             FROM enrollments 
             WHERE admission_no=? AND academic_year_id=? AND term_id=?
             ORDER BY subject_name
-        """, (adm_no, year_id, term_id))
+        """, (adm_no, year_id, term_id))]
         
-        enrolled = [r[0] for r in cur.fetchall()]
-        
-        # Load All Available for this level
-        cur.execute("""
+        all_subjects = [r[0] for r in fetch_all("""
             SELECT subject_name 
             FROM subjects 
             WHERE level=?
             ORDER BY subject_name
-        """, (level,))
-        
-        all_subjects = [r[0] for r in cur.fetchall()]
-        conn.close()
+        """, (level,))]
         
         available = [s for s in all_subjects if s not in enrolled]
         
@@ -331,31 +312,24 @@ class EnrollmentPage(QWidget):
         for i in range(self.enrolled_table.rowCount()):
             enrolled_subjects.append(self.enrolled_table.item(i, 0).text())
 
-        conn = connect()
-        cur = conn.cursor()
-        
         try:
-            # First delete existing enrollments for this student/term
-            cur.execute("""
-                DELETE FROM enrollments 
-                WHERE admission_no=? AND academic_year_id=? AND term_id=?
-            """, (adm_no, year_id, term_id))
-            
-            # Then insert new ones
-            for sub in enrolled_subjects:
+            with get_cursor(commit=True) as cur:
                 cur.execute("""
-                    INSERT INTO enrollments(admission_no, subject_name, academic_year_id, term_id)
-                    VALUES (?, ?, ?, ?)
-                """, (adm_no, sub, year_id, term_id))
+                    DELETE FROM enrollments 
+                    WHERE admission_no=? AND academic_year_id=? AND term_id=?
+                """, (adm_no, year_id, term_id))
+                
+                for sub in enrolled_subjects:
+                    cur.execute("""
+                        INSERT INTO enrollments(admission_no, subject_name, academic_year_id, term_id)
+                        VALUES (?, ?, ?, ?)
+                    """, (adm_no, sub, year_id, term_id))
             
-            conn.commit()
             QMessageBox.information(self, "Success", "Enrollments saved successfully.")
             
         except Exception as e:
-            conn.rollback()
             QMessageBox.critical(self, "Error", f"Failed to save enrollments: {str(e)}")
         
-        conn.close()
         self.load_enrollment_data()
 
     # =========================
@@ -378,15 +352,11 @@ class EnrollmentPage(QWidget):
             QMessageBox.warning(self, "Error", "Select Year and Term first")
             return
             
-        conn = connect()
-        cur = conn.cursor()
-        cur.execute("""
+        data = fetch_all("""
             SELECT admission_no, subject_name 
             FROM enrollments 
             WHERE academic_year_id=? AND term_id=?
         """, (year_id, term_id))
-        data = cur.fetchall()
-        conn.close()
         
         excel_utils.export_to_excel(
             self, 
@@ -410,41 +380,34 @@ class EnrollmentPage(QWidget):
             sheet = wb.active
             rows = list(sheet.iter_rows(min_row=12, values_only=True))
             
-            conn = connect()
-            cur = conn.cursor()
-            
             imported = 0
-            for row in rows:
-                if not row or len(row) < 2 or not row[0] or not row[1]: continue
-                
-                adm = str(row[0]).strip()
-                subject = str(row[1]).strip()
-                
-                try:
-                    # Validate student existence and get level
-                    cur.execute("SELECT level FROM students WHERE admission_no=?", (adm,))
-                    student_res = cur.fetchone()
-                    if not student_res:
-                        continue  # Skip if student not found
+            with get_cursor(commit=True) as cur:
+                for row in rows:
+                    if not row or len(row) < 2 or not row[0] or not row[1]: continue
                     
-                    student_level = student_res[0]
+                    adm = str(row[0]).strip()
+                    subject = str(row[1]).strip()
                     
-                    # Validate subject existence for this level
-                    cur.execute("SELECT 1 FROM subjects WHERE subject_name=? AND level=?", (subject, student_level))
-                    if not cur.fetchone():
-                        continue  # Skip if subject not found or level mismatch
-                    
-                    cur.execute("""
-                        INSERT INTO enrollments (admission_no, subject_name, academic_year_id, term_id)
-                        VALUES (?, ?, ?, ?)
-                        ON CONFLICT(admission_no, subject_name, academic_year_id, term_id) DO NOTHING
-                    """, (adm, subject, year_id, term_id))
-                    imported += 1
-                except:
-                    continue
-                    
-            conn.commit()
-            conn.close()
+                    try:
+                        cur.execute("SELECT level FROM students WHERE admission_no=?", (adm,))
+                        student_res = cur.fetchone()
+                        if not student_res:
+                            continue
+                        
+                        student_level = student_res[0]
+                        
+                        cur.execute("SELECT 1 FROM subjects WHERE subject_name=? AND level=?", (subject, student_level))
+                        if not cur.fetchone():
+                            continue
+                        
+                        cur.execute("""
+                            INSERT INTO enrollments (admission_no, subject_name, academic_year_id, term_id)
+                            VALUES (?, ?, ?, ?)
+                            ON CONFLICT(admission_no, subject_name, academic_year_id, term_id) DO NOTHING
+                        """, (adm, subject, year_id, term_id))
+                        imported += 1
+                    except:
+                        continue
             
             self.load_enrollment_data()
             QMessageBox.information(self, "Import Complete", f"Imported {imported} enrollment records.")
