@@ -16,7 +16,7 @@ from PySide6.QtWidgets import (
 import sqlite3
 
 from class_utils import get_classes
-from database import connect
+from db_utils import get_cursor, fetch_all
 from event_bus import EventBus
 from system_state import SystemState
 import openpyxl
@@ -153,56 +153,30 @@ class StudentsPage(QWidget):
             self.class_box.setCurrentIndex(0)
 
     def load(self):
-        conn = connect()
+        level = SystemState.get_level()
+        search_text = self.search.text().strip()
 
-        try:
-            cur = conn.cursor()
-            level = SystemState.get_level()
-            search_text = self.search.text().strip()
-
-            if search_text:
-                pattern = f"%{search_text}%"
-                cur.execute("""
-                    SELECT id,
-                           admission_no,
-                           full_name,
-                           gender,
-                           class,
-                           stream,
-                           level
-                    FROM students
-                    WHERE level=?
-                      AND (
-                          admission_no LIKE ?
-                          OR full_name LIKE ?
-                          OR class LIKE ?
-                          OR COALESCE(stream, '') LIKE ?
-                      )
-                    ORDER BY id DESC
-                """, (
-                    level,
-                    pattern,
-                    pattern,
-                    pattern,
-                    pattern,
-                ))
-            else:
-                cur.execute("""
-                    SELECT id,
-                           admission_no,
-                           full_name,
-                           gender,
-                           class,
-                           stream,
-                           level
-                    FROM students
-                    WHERE level=?
-                    ORDER BY id DESC
-                """, (level,))
-
-            rows = cur.fetchall()
-        finally:
-            conn.close()
+        if search_text:
+            pattern = f"%{search_text}%"
+            rows = fetch_all("""
+                SELECT id, admission_no, full_name, gender, class, stream, level
+                FROM students
+                WHERE level=?
+                  AND (
+                      admission_no LIKE ?
+                      OR full_name LIKE ?
+                      OR class LIKE ?
+                      OR COALESCE(stream, '') LIKE ?
+                  )
+                ORDER BY id DESC
+            """, (level, pattern, pattern, pattern, pattern))
+        else:
+            rows = fetch_all("""
+                SELECT id, admission_no, full_name, gender, class, stream, level
+                FROM students
+                WHERE level=?
+                ORDER BY id DESC
+            """, (level,))
 
         self.table.setRowCount(len(rows))
 
@@ -223,57 +197,24 @@ class StudentsPage(QWidget):
 
         if not admission_no or not full_name or not class_name:
             QMessageBox.warning(
-                self,
-                "Required Fields",
+                self, "Required Fields",
                 "Admission number, full name and class are required.",
             )
             return
 
-        conn = connect()
-
         try:
-            cur = conn.cursor()
-
-            if self.selected_id is None:
-                cur.execute("""
-                    INSERT INTO students (
-                        admission_no,
-                        full_name,
-                        gender,
-                        class,
-                        stream,
-                        level
-                    )
-                    VALUES (?, ?, ?, ?, ?, ?)
-                """, (
-                    admission_no,
-                    full_name,
-                    gender,
-                    class_name,
-                    stream,
-                    level,
-                ))
-            else:
-                cur.execute("""
-                    UPDATE students
-                    SET admission_no=?,
-                        full_name=?,
-                        gender=?,
-                        class=?,
-                        stream=?,
-                        level=?
-                    WHERE id=?
-                """, (
-                    admission_no,
-                    full_name,
-                    gender,
-                    class_name,
-                    stream,
-                    level,
-                    self.selected_id,
-                ))
-
-            conn.commit()
+            with get_cursor(commit=True) as cur:
+                if self.selected_id is None:
+                    cur.execute("""
+                        INSERT INTO students (admission_no, full_name, gender, class, stream, level)
+                        VALUES (?, ?, ?, ?, ?, ?)
+                    """, (admission_no, full_name, gender, class_name, stream, level))
+                else:
+                    cur.execute("""
+                        UPDATE students
+                        SET admission_no=?, full_name=?, gender=?, class=?, stream=?, level=?
+                        WHERE id=?
+                    """, (admission_no, full_name, gender, class_name, stream, level, self.selected_id))
 
         except sqlite3.IntegrityError:
             QMessageBox.warning(
@@ -281,7 +222,6 @@ class StudentsPage(QWidget):
                 "Duplicate Admission Number",
                 "That admission number is already registered.",
             )
-            return
         except Exception:
             QMessageBox.critical(
                 self,
@@ -289,8 +229,6 @@ class StudentsPage(QWidget):
                 "An unexpected error occurred while saving the student record.",
             )
             return
-        finally:
-            conn.close()
 
         self.clear_form()
         EventBus.emit("STUDENTS_UPDATED")
@@ -335,33 +273,24 @@ class StudentsPage(QWidget):
     def delete_student(self):
         if self.selected_id is None:
             QMessageBox.warning(
-                self,
-                "Delete Student",
+                self, "Delete Student",
                 "Double-click a student before deleting.",
             )
             return
 
         answer = QMessageBox.question(
-            self,
-            "Delete Student",
+            self, "Delete Student",
             "Are you sure you want to delete this student?",
-            QMessageBox.StandardButton.Yes
-            | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
         )
 
         if answer != QMessageBox.StandardButton.Yes:
             return
 
-        conn = connect()
-
         try:
-            cur = conn.cursor()
-            cur.execute(
-                "DELETE FROM students WHERE id=?",
-                (self.selected_id,),
-            )
-            conn.commit()
+            with get_cursor(commit=True) as cur:
+                cur.execute("DELETE FROM students WHERE id=?", (self.selected_id,))
         except Exception:
             QMessageBox.critical(
                 self,
@@ -369,8 +298,6 @@ class StudentsPage(QWidget):
                 "An unexpected error occurred while deleting the student record.",
             )
             return
-        finally:
-            conn.close()
 
         self.clear_form()
         EventBus.emit("STUDENTS_UPDATED")
@@ -405,12 +332,8 @@ class StudentsPage(QWidget):
         )
 
     def export_excel(self):
-        conn = connect()
-        cur = conn.cursor()
         level = SystemState.get_level()
-        cur.execute("SELECT admission_no, full_name, gender, class, stream FROM students WHERE level=?", (level,))
-        data = cur.fetchall()
-        conn.close()
+        data = fetch_all("SELECT admission_no, full_name, gender, class, stream FROM students WHERE level=?", (level,))
         
         excel_utils.export_to_excel(
             self, 
@@ -427,9 +350,6 @@ class StudentsPage(QWidget):
             wb = openpyxl.load_workbook(path, data_only=True)
             sheet = wb.active
             rows = list(sheet.iter_rows(min_row=12, values_only=True))
-            
-            conn = connect()
-            cur = conn.cursor()
 
             imported = 0
             updated = 0
@@ -438,66 +358,59 @@ class StudentsPage(QWidget):
             o_classes = ["Form I", "Form II", "Form III", "Form IV"]
             a_classes = ["Form V", "Form VI"]
 
-            for row in rows:
-                # Skip empty rows or rows missing admission number
-                if not row or not row[0]:
-                    continue
+            with get_cursor(commit=True) as cur:
+                for row in rows:
+                    if not row or not row[0]:
+                        continue
 
-                # Ensure row has enough columns
-                if len(row) < 6:
-                    rejected += 1
-                    continue
+                    if len(row) < 6:
+                        rejected += 1
+                        continue
 
-                adm = str(row[0]).strip()
-                name = str(row[1] or "").strip()
-                gender = str(row[2] or "").strip()
-                cls = str(row[3] or "").strip()
-                stream = str(row[4] or "").strip()
-                level_excel = str(row[5] or "").strip().upper()
+                    adm = str(row[0]).strip()
+                    name = str(row[1] or "").strip()
+                    gender = str(row[2] or "").strip()
+                    cls = str(row[3] or "").strip()
+                    stream = str(row[4] or "").strip()
+                    level_excel = str(row[5] or "").strip().upper()
 
-                # Validate Required Fields
-                if not name or not cls or not level_excel:
-                    rejected += 1
-                    continue
+                    if not name or not cls or not level_excel:
+                        rejected += 1
+                        continue
 
-                # Validate Level vs Class Combination
-                is_valid = False
-                if level_excel == "O_LEVEL" and cls in o_classes:
-                    is_valid = True
-                elif level_excel == "A_LEVEL" and cls in a_classes:
-                    is_valid = True
+                    is_valid = False
+                    if level_excel == "O_LEVEL" and cls in o_classes:
+                        is_valid = True
+                    elif level_excel == "A_LEVEL" and cls in a_classes:
+                        is_valid = True
 
-                if not is_valid:
-                    rejected += 1
-                    continue
-                
-                try:
-                    # Check if student exists for summary counting
-                    cur.execute("SELECT 1 FROM students WHERE admission_no=?", (adm,))
-                    exists = cur.fetchone()
-
-                    cur.execute("""
-                        INSERT INTO students (admission_no, full_name, gender, class, stream, level)
-                        VALUES (?, ?, ?, ?, ?, ?)
-                        ON CONFLICT(admission_no) DO UPDATE SET
-                            full_name=excluded.full_name,
-                            gender=excluded.gender,
-                            class=excluded.class,
-                            stream=excluded.stream,
-                            level=excluded.level
-                    """, (adm, name, gender, cls, stream, level_excel))
+                    if not is_valid:
+                        rejected += 1
+                        continue
                     
-                    if exists:
-                        updated += 1
-                    else:
-                        imported += 1
-                except Exception as e:
-                    print(f"[ERROR] Failed to import student '{adm}': {e}")
-                    rejected += 1
-                    continue
-                    
-            conn.commit()
-            conn.close()
+                    try:
+                        cur.execute("SELECT 1 FROM students WHERE admission_no=?", (adm,))
+                        exists = cur.fetchone()
+
+                        cur.execute("""
+                            INSERT INTO students (admission_no, full_name, gender, class, stream, level)
+                            VALUES (?, ?, ?, ?, ?, ?)
+                            ON CONFLICT(admission_no) DO UPDATE SET
+                                full_name=excluded.full_name,
+                                gender=excluded.gender,
+                                class=excluded.class,
+                                stream=excluded.stream,
+                                level=excluded.level
+                        """, (adm, name, gender, cls, stream, level_excel))
+                        
+                        if exists:
+                            updated += 1
+                        else:
+                            imported += 1
+                    except Exception as e:
+                        print(f"[ERROR] Failed to import student '{adm}': {e}")
+                        rejected += 1
+                        continue
             
             self.load()
             EventBus.emit("STUDENTS_UPDATED")

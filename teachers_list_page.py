@@ -6,16 +6,16 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QTableWidget,
-    QTableWidgetItem,
     QMessageBox,
-    QAbstractItemView,
-    QHeaderView,
     QComboBox,
     QFileDialog
 )
 
 import pandas as pd
 
+from db_utils import get_cursor, fetch_all
+from table_utils import setup_table, populate_table
+from ui_helpers import show_error, show_info
 from database import connect
 from system_state import SystemState
 from event_bus import EventBus
@@ -96,33 +96,11 @@ class TeachersListPage(QWidget):
         layout.addWidget(self.search)
 
         self.table = QTableWidget()
-
-        self.table.setColumnCount(7)
-        self.table.setHorizontalHeaderLabels([
-            "ID",
-            "Teacher No",
-            "Full Name",
-            "Gender",
-            "Phone",
-            "Email",
-            "Status"
+        setup_table(self.table, [
+            "ID", "Teacher No", "Full Name",
+            "Gender", "Phone", "Email", "Status"
         ])
-
-        self.table.setSelectionBehavior(
-            QAbstractItemView.SelectRows
-        )
-
-        self.table.setEditTriggers(
-            QAbstractItemView.NoEditTriggers
-        )
-
-        self.table.doubleClicked.connect(
-            self.load_selected
-        )
-
-        self.table.horizontalHeader().setSectionResizeMode(
-            QHeaderView.Stretch
-        )
+        self.table.doubleClicked.connect(self.load_selected)
 
         layout.addWidget(self.table)
 
@@ -140,55 +118,23 @@ class TeachersListPage(QWidget):
 
     def load(self):
 
-        conn = connect()
-        cur = conn.cursor()
-
         search = self.search.text().strip()
 
         if search:
-            cur.execute("""
-                SELECT
-                    id,
-                    teacher_no,
-                    full_name,
-                    gender,
-                    phone,
-                    email,
-                    status
+            rows = fetch_all("""
+                SELECT id, teacher_no, full_name, gender, phone, email, status
                 FROM teachers
-                WHERE teacher_no LIKE ?
-                OR full_name LIKE ?
+                WHERE teacher_no LIKE ? OR full_name LIKE ?
                 ORDER BY id DESC
-            """, (
-                f"%{search}%",
-                f"%{search}%"
-            ))
+            """, (f"%{search}%", f"%{search}%"))
         else:
-            cur.execute("""
-                SELECT
-                    id,
-                    teacher_no,
-                    full_name,
-                    gender,
-                    phone,
-                    email,
-                    status
+            rows = fetch_all("""
+                SELECT id, teacher_no, full_name, gender, phone, email, status
                 FROM teachers
                 ORDER BY id DESC
             """)
 
-        rows = cur.fetchall()
-        conn.close()
-
-        self.table.setRowCount(len(rows))
-
-        for r, row in enumerate(rows):
-            for c, value in enumerate(row):
-                self.table.setItem(
-                    r,
-                    c,
-                    QTableWidgetItem(str(value))
-                )
+        populate_table(self.table, rows)
 
     def save_teacher(self):
 
@@ -199,230 +145,105 @@ class TeachersListPage(QWidget):
         email = self.email.text().strip()
 
         if not teacher_no or not full_name:
-            QMessageBox.warning(
-                self,
-                "Error",
-                "Teacher No and Name required"
-            )
+            show_error(self, "Teacher No and Name required")
             return
 
         level = SystemState.get_level()
 
-        conn = connect()
-        cur = conn.cursor()
-
         try:
-
-            if self.selected_teacher_id:
-
-                cur.execute("""
-                    UPDATE teachers
-                    SET
-                        teacher_no=?,
-                        full_name=?,
-                        gender=?,
-                        phone=?,
-                        email=?
-                    WHERE id=?
-                """, (
-                    teacher_no,
-                    full_name,
-                    gender,
-                    phone,
-                    email,
-                    self.selected_teacher_id
-                ))
-
-            else:
-
-                cur.execute("""
-                    INSERT INTO teachers(
-                        teacher_no,
-                        full_name,
-                        gender,
-                        phone,
-                        email,
-                        status,
-                        level
-                    )
-                    VALUES(?,?,?,?,?,?,?)
-                """, (
-                    teacher_no,
-                    full_name,
-                    gender,
-                    phone,
-                    email,
-                    "ACTIVE",
-                    level
-                ))
-
-            conn.commit()
+            with get_cursor(commit=True) as cur:
+                if self.selected_teacher_id:
+                    cur.execute("""
+                        UPDATE teachers
+                        SET teacher_no=?, full_name=?, gender=?, phone=?, email=?
+                        WHERE id=?
+                    """, (teacher_no, full_name, gender, phone, email, self.selected_teacher_id))
+                else:
+                    cur.execute("""
+                        INSERT INTO teachers(teacher_no, full_name, gender, phone, email, status, level)
+                        VALUES(?,?,?,?,?,?,?)
+                    """, (teacher_no, full_name, gender, phone, email, "ACTIVE", level))
 
             EventBus.emit("TEACHERS_UPDATED")
             self.clear_form()
 
         except Exception as e:
-
-            QMessageBox.critical(
-                self,
-                "Database Error",
-                str(e)
-            )
-
-        finally:
-            conn.close()
+            QMessageBox.critical(self, "Database Error", str(e))
 
     def export_template(self):
 
         path, _ = QFileDialog.getSaveFileName(
-            self,
-            "Save Template",
-            "teachers_template.xlsx",
-            "Excel Files (*.xlsx)"
+            self, "Save Template", "teachers_template.xlsx", "Excel Files (*.xlsx)"
         )
 
         if not path:
             return
 
-        df = pd.DataFrame([
-            {
-                "Teacher No": "T001",
-                "Full Name": "Ali Salum",
-                "Gender": "Male",
-                "Phone": "0712345678",
-                "Email": "ali@example.com"
-            }
-        ])
+        df = pd.DataFrame([{
+            "Teacher No": "T001",
+            "Full Name": "Ali Salum",
+            "Gender": "Male",
+            "Phone": "0712345678",
+            "Email": "ali@example.com"
+        }])
 
         df.to_excel(path, index=False)
-
-        QMessageBox.information(
-            self,
-            "Success",
-            "Template exported successfully."
-        )
+        show_info(self, "Template exported successfully.")
 
     def export_teachers(self):
 
         path, _ = QFileDialog.getSaveFileName(
-            self,
-            "Export Teachers",
-            "teachers_export.xlsx",
-            "Excel Files (*.xlsx)"
+            self, "Export Teachers", "teachers_export.xlsx", "Excel Files (*.xlsx)"
         )
 
         if not path:
             return
 
         conn = connect()
-
         df = pd.read_sql_query("""
-            SELECT
-                teacher_no,
-                full_name,
-                gender,
-                phone,
-                email,
-                status,
-                level
+            SELECT teacher_no, full_name, gender, phone, email, status, level
             FROM teachers
         """, conn)
-
         conn.close()
 
         df.to_excel(path, index=False)
-
-        QMessageBox.information(
-            self,
-            "Success",
-            "Teachers exported successfully."
-        )
+        show_info(self, "Teachers exported successfully.")
 
     def import_excel(self):
 
         path, _ = QFileDialog.getOpenFileName(
-            self,
-            "Import Teachers",
-            "",
-            "Excel Files (*.xlsx)"
+            self, "Import Teachers", "", "Excel Files (*.xlsx)"
         )
 
         if not path:
             return
 
         try:
-
             df = pd.read_excel(path)
-
-            conn = connect()
-            cur = conn.cursor()
-
             level = SystemState.get_level()
 
-            for _, row in df.iterrows():
+            with get_cursor(commit=True) as cur:
+                for _, row in df.iterrows():
+                    teacher_no = str(row.get("Teacher No", "")).strip()
+                    full_name = str(row.get("Full Name", "")).strip()
+                    gender = str(row.get("Gender", "")).strip()
+                    phone = str(row.get("Phone", "")).strip()
+                    email = str(row.get("Email", "")).strip()
 
-                teacher_no = str(
-                    row.get("Teacher No", "")
-                ).strip()
+                    if not teacher_no or not full_name:
+                        continue
 
-                full_name = str(
-                    row.get("Full Name", "")
-                ).strip()
-
-                gender = str(
-                    row.get("Gender", "")
-                ).strip()
-
-                phone = str(
-                    row.get("Phone", "")
-                ).strip()
-
-                email = str(
-                    row.get("Email", "")
-                ).strip()
-
-                if not teacher_no or not full_name:
-                    continue
-
-                cur.execute("""
-                    INSERT OR IGNORE INTO teachers(
-                        teacher_no,
-                        full_name,
-                        gender,
-                        phone,
-                        email,
-                        status,
-                        level
-                    )
-                    VALUES(?,?,?,?,?,?,?)
-                """, (
-                    teacher_no,
-                    full_name,
-                    gender,
-                    phone,
-                    email,
-                    "ACTIVE",
-                    level
-                ))
-
-            conn.commit()
-            conn.close()
+                    cur.execute("""
+                        INSERT OR IGNORE INTO teachers(
+                            teacher_no, full_name, gender, phone, email, status, level
+                        ) VALUES(?,?,?,?,?,?,?)
+                    """, (teacher_no, full_name, gender, phone, email, "ACTIVE", level))
 
             self.load()
-
-            QMessageBox.information(
-                self,
-                "Success",
-                "Teachers imported successfully."
-            )
+            show_info(self, "Teachers imported successfully.")
 
         except Exception as error:
-
-            QMessageBox.critical(
-                self,
-                "Import Error",
-                str(error)
-            )
+            QMessageBox.critical(self, "Import Error", str(error))
 
     def load_selected(self):
         row = self.table.currentRow()

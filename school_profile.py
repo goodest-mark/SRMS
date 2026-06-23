@@ -7,7 +7,7 @@ from PySide6.QtWidgets import (
 from PySide6.QtGui import QPixmap
 from PySide6.QtCore import Qt
 
-from database import connect
+from db_utils import fetch_one, get_cursor
 from security_settings import authorize_action
 
 _ALLOWED_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg"}
@@ -196,17 +196,13 @@ class SchoolProfilePage(QWidget):
 
     def load(self):
         try:
-            conn = connect()
-            cur = conn.cursor()
-            cur.execute("""
+            row = fetch_one("""
                 SELECT school_name, school_motto, school_address, school_phone,
                        school_email, school_website, head_teacher, academic_master,
                        school_logo, school_stamp, login_background, dashboard_background,
                        watermark_text
                 FROM school_profile LIMIT 1
             """)
-            row = cur.fetchone()
-            conn.close()
             
             if row:
                 self.school_name.setText(row[0] or "")
@@ -236,25 +232,22 @@ class SchoolProfilePage(QWidget):
             return
 
         try:
-            conn = connect()
-            cur = conn.cursor()
-            cur.execute("DELETE FROM school_profile")
-            cur.execute("""
-                INSERT INTO school_profile (
-                    school_name, school_motto, school_address, school_phone,
-                    school_email, school_website, head_teacher, academic_master,
-                    school_logo, school_stamp, login_background, dashboard_background,
-                    watermark_text
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (
-                self.school_name.text(), self.school_motto.text(), self.school_address.text(),
-                self.school_phone.text(), self.school_email.text(), self.school_website.text(),
-                self.head_teacher.text(), self.academic_master.text(),
-                self.logo_path, self.stamp_path, self.login_bg_path,
-                self.dashboard_bg_path, self.watermark_text.text() or "CONFIDENTIAL"
-            ))
-            conn.commit()
-            conn.close()
+            with get_cursor(commit=True) as cur:
+                cur.execute("DELETE FROM school_profile")
+                cur.execute("""
+                    INSERT INTO school_profile (
+                        school_name, school_motto, school_address, school_phone,
+                        school_email, school_website, head_teacher, academic_master,
+                        school_logo, school_stamp, login_background, dashboard_background,
+                        watermark_text
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    self.school_name.text(), self.school_motto.text(), self.school_address.text(),
+                    self.school_phone.text(), self.school_email.text(), self.school_website.text(),
+                    self.head_teacher.text(), self.academic_master.text(),
+                    self.logo_path, self.stamp_path, self.login_bg_path,
+                    self.dashboard_bg_path, self.watermark_text.text() or "CONFIDENTIAL"
+                ))
             QMessageBox.information(self, "Success", "School Profile Configuration Saved.")
         except Exception:
             QMessageBox.critical(self, "Error", "An unexpected error occurred while saving the school profile.")

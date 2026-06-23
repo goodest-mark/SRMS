@@ -5,13 +5,12 @@ from PySide6.QtWidgets import (
     QPushButton,
     QComboBox,
     QTableWidget,
-    QTableWidgetItem,
     QMessageBox,
-    QAbstractItemView,
-    QHeaderView
 )
 
-from database import connect
+from db_utils import get_cursor, fetch_all
+from table_utils import setup_table, populate_table
+from ui_helpers import show_error, load_combo
 
 
 class TermsPage(QWidget):
@@ -58,29 +57,7 @@ class TermsPage(QWidget):
         # =========================
 
         self.table = QTableWidget()
-
-        self.table.setColumnCount(4)
-
-        self.table.setHorizontalHeaderLabels([
-            "ID",
-            "Term",
-            "Academic Year",
-            "Active"
-        ])
-
-        self.table.setSelectionBehavior(
-            QAbstractItemView.SelectRows
-        )
-
-        self.table.setEditTriggers(
-            QAbstractItemView.NoEditTriggers
-        )
-
-        header = self.table.horizontalHeader()
-
-        header.setSectionResizeMode(
-            QHeaderView.Stretch
-        )
+        setup_table(self.table, ["ID", "Term", "Academic Year", "Active"])
 
         # =========================
         # LAYOUT
@@ -100,28 +77,13 @@ class TermsPage(QWidget):
 
     def load_years(self):
 
-        self.year_box.clear()
-
-        conn = connect()
-        cur = conn.cursor()
-
-        cur.execute("""
-            SELECT id,
-                   year_name
+        rows = fetch_all("""
+            SELECT year_name, id
             FROM academic_years
             ORDER BY year_name DESC
         """)
 
-        rows = cur.fetchall()
-
-        conn.close()
-
-        for row in rows:
-
-            self.year_box.addItem(
-                row[1],
-                row[0]
-            )
+        load_combo(self.year_box, rows)
 
     # =========================
     # ADD TERM
@@ -130,73 +92,32 @@ class TermsPage(QWidget):
     def add_term(self):
 
         if self.year_box.count() == 0:
-
-            QMessageBox.warning(
-                self,
-                "Error",
-                "Create academic year first"
-            )
-
+            show_error(self, "Create academic year first")
             return
 
         year_id = self.year_box.currentData()
-
-        term_name = (
-            self.term_box.currentText()
-        )
-
-        conn = connect()
-        cur = conn.cursor()
+        term_name = self.term_box.currentText()
 
         try:
+            with get_cursor(commit=True) as cur:
+                cur.execute("""
+                    SELECT id FROM terms
+                    WHERE term_name=? AND academic_year_id=?
+                """, (term_name, year_id))
 
-            cur.execute("""
-                SELECT id
-                FROM terms
-                WHERE term_name=?
-                AND academic_year_id=?
-            """, (
-                term_name,
-                year_id
-            ))
+                if cur.fetchone():
+                    show_error(self, "Term already exists")
+                    return
 
-            if cur.fetchone():
-
-                QMessageBox.warning(
-                    self,
-                    "Error",
-                    "Term already exists"
-                )
-
-                conn.close()
-
-                return
-
-            cur.execute("""
-                INSERT INTO terms(
-                    term_name,
-                    academic_year_id,
-                    is_active
-                )
-                VALUES (?, ?, 0)
-            """, (
-                term_name,
-                year_id
-            ))
-
-            conn.commit()
+                cur.execute("""
+                    INSERT INTO terms(term_name, academic_year_id, is_active)
+                    VALUES (?, ?, 0)
+                """, (term_name, year_id))
 
             self.load()
 
         except Exception as e:
-
-            QMessageBox.warning(
-                self,
-                "Error",
-                str(e)
-            )
-
-        conn.close()
+            show_error(self, str(e))
 
     # =========================
     # ACTIVATE TERM
@@ -209,36 +130,20 @@ class TermsPage(QWidget):
         if row < 0:
             return
 
-        term_id = self.table.item(
-            row,
-            0
-        ).text()
-
-        conn = connect()
-        cur = conn.cursor()
+        term_id = self.table.item(row, 0).text()
 
         try:
-            cur.execute("""
-                UPDATE terms
-                SET is_active=0
-            """)
-
-            cur.execute("""
-                UPDATE terms
-                SET is_active=1
-                WHERE id=?
-            """, (term_id,))
-
-            conn.commit()
+            with get_cursor(commit=True) as cur:
+                cur.execute("UPDATE terms SET is_active=0")
+                cur.execute("""
+                    UPDATE terms SET is_active=1 WHERE id=?
+                """, (term_id,))
         except Exception as e:
-            conn.rollback()
             QMessageBox.critical(
                 self,
                 "Database Error",
                 f"Failed to activate term: {e}"
             )
-        finally:
-            conn.close()
 
         self.load()
 
@@ -248,10 +153,7 @@ class TermsPage(QWidget):
 
     def load(self):
 
-        conn = connect()
-        cur = conn.cursor()
-
-        cur.execute("""
+        rows = fetch_all("""
             SELECT
                 t.id,
                 t.term_name,
@@ -263,49 +165,7 @@ class TermsPage(QWidget):
             ORDER BY t.id DESC
         """)
 
-        rows = cur.fetchall()
-
-        conn.close()
-
-        self.table.setRowCount(
-            len(rows)
+        populate_table(
+            self.table, rows,
+            formatters={3: lambda v: "YES" if v else "NO"}
         )
-
-        for r, row in enumerate(rows):
-
-            active = "YES"
-
-            if row[3] == 0:
-                active = "NO"
-
-            self.table.setItem(
-                r,
-                0,
-                QTableWidgetItem(
-                    str(row[0])
-                )
-            )
-
-            self.table.setItem(
-                r,
-                1,
-                QTableWidgetItem(
-                    row[1]
-                )
-            )
-
-            self.table.setItem(
-                r,
-                2,
-                QTableWidgetItem(
-                    row[2]
-                )
-            )
-
-            self.table.setItem(
-                r,
-                3,
-                QTableWidgetItem(
-                    active
-                )
-            )

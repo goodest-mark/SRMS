@@ -2,7 +2,7 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QFormLayout, QLineEdit,
     QPushButton, QMessageBox, QLabel, QGroupBox, QCheckBox, QComboBox, QScrollArea
 )
-from database import connect
+from db_utils import get_cursor, fetch_all, execute, execute_many
 from security_settings import authorize_action
 
 class SettingsPage(QWidget):
@@ -90,11 +90,7 @@ class SettingsPage(QWidget):
         self.load_settings()
 
     def load_settings(self):
-        conn = connect()
-        cur = conn.cursor()
-        cur.execute("SELECT setting_key, setting_value FROM system_settings")
-        settings = dict(cur.fetchall())
-        conn.close()
+        settings = dict(fetch_all("SELECT setting_key, setting_value FROM system_settings"))
 
         self.o_level_counted.setText(settings.get('o_level_counted', '7'))
         self.a_level_principal.setText(settings.get('a_level_principal', '3'))
@@ -137,11 +133,7 @@ class SettingsPage(QWidget):
             ('default_level', self.default_level.currentText()),
             ('backup_folder', self.backup_folder.text())
         ]
-        conn = connect()
-        cur = conn.cursor()
-        cur.executemany("REPLACE INTO system_settings (setting_key, setting_value) VALUES (?, ?)", data)
-        conn.commit()
-        conn.close()
+        execute_many("REPLACE INTO system_settings (setting_key, setting_value) VALUES (?, ?)", data)
         QMessageBox.information(self, "Success", "Global settings updated successfully.")
 
     def restore_defaults(self):
@@ -150,23 +142,15 @@ class SettingsPage(QWidget):
             if not authorize_action(self, "System Settings Changes"):
                 return
 
-            conn = connect()
-            cur = conn.cursor()
-            cur.execute("DELETE FROM system_settings")
-            conn.commit()
-            conn.close()
-            # Re-init DB to trigger defaults
+            execute("DELETE FROM system_settings")
             from database import init_db
             init_db()
             self.load_settings()
 
 def get_setting(key, default=None):
+    from db_utils import fetch_one
     try:
-        conn = connect()
-        cur = conn.cursor()
-        cur.execute("SELECT setting_value FROM system_settings WHERE setting_key=?", (key,))
-        res = cur.fetchone()
-        conn.close()
+        res = fetch_one("SELECT setting_value FROM system_settings WHERE setting_key=?", (key,))
         return res[0] if res else default
     except Exception as e:
         print(f"[ERROR] Failed to read setting '{key}': {e}")

@@ -5,13 +5,12 @@ from PySide6.QtWidgets import (
     QPushButton,
     QLineEdit,
     QTableWidget,
-    QTableWidgetItem,
     QMessageBox,
-    QAbstractItemView,
-    QHeaderView
 )
 
-from database import connect
+from db_utils import get_cursor, fetch_all
+from table_utils import setup_table, populate_table
+from ui_helpers import show_error
 
 
 class AcademicYearsPage(QWidget):
@@ -37,25 +36,7 @@ class AcademicYearsPage(QWidget):
         top.addWidget(self.activate_btn)
 
         self.table = QTableWidget()
-
-        self.table.setColumnCount(3)
-
-        self.table.setHorizontalHeaderLabels([
-            "ID",
-            "Year",
-            "Active"
-        ])
-
-        self.table.setSelectionBehavior(
-            QAbstractItemView.SelectRows
-        )
-
-        self.table.setEditTriggers(
-            QAbstractItemView.NoEditTriggers
-        )
-
-        header = self.table.horizontalHeader()
-        header.setSectionResizeMode(QHeaderView.Stretch)
+        setup_table(self.table, ["ID", "Year", "Active"])
 
         layout.addLayout(top)
         layout.addWidget(self.table)
@@ -71,33 +52,20 @@ class AcademicYearsPage(QWidget):
         if not year:
             return
 
-        conn = connect()
-        cur = conn.cursor()
-
         try:
-
-            cur.execute("""
-                INSERT INTO academic_years(
-                    year_name
-                )
-                VALUES(?)
-            """, (year,))
-
-            conn.commit()
+            with get_cursor(commit=True) as cur:
+                cur.execute("""
+                    INSERT INTO academic_years(
+                        year_name
+                    )
+                    VALUES(?)
+                """, (year,))
 
             self.year_input.clear()
-
             self.load()
 
         except Exception as e:
-
-            QMessageBox.warning(
-                self,
-                "Error",
-                str(e)
-            )
-
-        conn.close()
+            show_error(self, str(e))
 
     def activate_year(self):
 
@@ -106,79 +74,34 @@ class AcademicYearsPage(QWidget):
         if row < 0:
             return
 
-        year_id = self.table.item(
-            row,
-            0
-        ).text()
-
-        conn = connect()
-        cur = conn.cursor()
+        year_id = self.table.item(row, 0).text()
 
         try:
-            cur.execute("""
-                UPDATE academic_years
-                SET is_active=0
-            """)
-
-            cur.execute("""
-                UPDATE academic_years
-                SET is_active=1
-                WHERE id=?
-            """, (year_id,))
-
-            conn.commit()
+            with get_cursor(commit=True) as cur:
+                cur.execute("UPDATE academic_years SET is_active=0")
+                cur.execute("""
+                    UPDATE academic_years
+                    SET is_active=1
+                    WHERE id=?
+                """, (year_id,))
         except Exception as e:
-            conn.rollback()
             QMessageBox.critical(
                 self,
                 "Database Error",
                 f"Failed to activate year: {e}"
             )
-        finally:
-            conn.close()
 
         self.load()
 
     def load(self):
 
-        conn = connect()
-        cur = conn.cursor()
-
-        cur.execute("""
-            SELECT
-                id,
-                year_name,
-                is_active
+        rows = fetch_all("""
+            SELECT id, year_name, is_active
             FROM academic_years
             ORDER BY id DESC
         """)
 
-        rows = cur.fetchall()
-
-        conn.close()
-
-        self.table.setRowCount(
-            len(rows)
+        populate_table(
+            self.table, rows,
+            formatters={2: lambda v: "YES" if v else "NO"}
         )
-
-        for r, row in enumerate(rows):
-
-            active = "YES"
-
-            if row[2] == 0:
-                active = "NO"
-
-            self.table.setItem(
-                r, 0,
-                QTableWidgetItem(str(row[0]))
-            )
-
-            self.table.setItem(
-                r, 1,
-                QTableWidgetItem(row[1])
-            )
-
-            self.table.setItem(
-                r, 2,
-                QTableWidgetItem(active)
-            )
