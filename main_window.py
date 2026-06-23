@@ -1,5 +1,8 @@
-from PySide6.QtGui import QIcon
-from PySide6.QtCore import QSize, Qt, QPropertyAnimation, QEasingCurve
+from PySide6.QtGui import QIcon, QPainter, QColor, QPen
+from PySide6.QtCore import (
+    QSize, Qt, QPropertyAnimation, QEasingCurve,
+    QRect, QRectF, Property, Signal
+)
 
 from PySide6.QtWidgets import (
     QMainWindow,
@@ -12,6 +15,105 @@ from PySide6.QtWidgets import (
     QComboBox,
     QSizePolicy
 )
+
+
+class LevelToggleSwitch(QWidget):
+    """Custom slide-switch for O-LEVEL / A-LEVEL."""
+
+    toggled = Signal(bool)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._checked = False
+        self._thumb_x = 4.0
+        self.setFixedSize(120, 36)
+        self.setCursor(Qt.PointingHandCursor)
+        self.setToolTip(
+            "Slide to switch between O-Level and A-Level"
+        )
+        self._anim = QPropertyAnimation(self, b"thumb_x")
+        self._anim.setDuration(200)
+        self._anim.setEasingCurve(QEasingCurve.InOutCubic)
+
+    def get_thumb_x(self):
+        return self._thumb_x
+
+    def set_thumb_x(self, val):
+        self._thumb_x = val
+        self.update()
+
+    thumb_x = Property(float, get_thumb_x, set_thumb_x)
+
+    def isChecked(self):
+        return self._checked
+
+    def setChecked(self, checked, animate=True):
+        self._checked = checked
+        end = self.width() - self.height() + 4 if checked else 4.0
+        if animate:
+            self._anim.stop()
+            self._anim.setStartValue(self._thumb_x)
+            self._anim.setEndValue(end)
+            self._anim.start()
+        else:
+            self._thumb_x = end
+            self.update()
+
+    def mousePressEvent(self, event):
+        self._checked = not self._checked
+        self.setChecked(self._checked)
+        self.toggled.emit(self._checked)
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        w, h = self.width(), self.height()
+        r = h / 2
+
+        if self._checked:
+            track_color = QColor(109, 40, 217)
+            thumb_color = QColor(196, 181, 253)
+            left_text = ""
+            right_text = "A-LEVEL"
+            text_color = QColor(237, 233, 254)
+        else:
+            track_color = QColor(37, 99, 235)
+            thumb_color = QColor(191, 219, 254)
+            left_text = "O-LEVEL"
+            right_text = ""
+            text_color = QColor(219, 234, 254)
+
+        p.setPen(Qt.NoPen)
+        p.setBrush(track_color)
+        p.drawRoundedRect(QRectF(0, 0, w, h), r, r)
+
+        thumb_d = h - 8
+        p.setBrush(thumb_color)
+        p.drawEllipse(
+            QRectF(self._thumb_x, 4, thumb_d, thumb_d)
+        )
+
+        p.setPen(QPen(text_color))
+        font = p.font()
+        font.setPixelSize(11)
+        font.setBold(True)
+        p.setFont(font)
+        if left_text:
+            text_rect = QRectF(
+                thumb_d + 8, 0, w - thumb_d - 12, h
+            )
+            p.drawText(
+                text_rect, Qt.AlignCenter, left_text
+            )
+        if right_text:
+            text_rect = QRectF(
+                4, 0, w - thumb_d - 12, h
+            )
+            p.drawText(
+                text_rect, Qt.AlignCenter, right_text
+            )
+
+        p.end()
 
 from event_bus import EventBus
 from system_state import SystemState
@@ -54,48 +156,39 @@ class MainWindow(QMainWindow):
             font-weight:bold;
         """)
 
-        # Level toggle - clear switch style
-        self.level_btn = QPushButton()
-
+        # Level toggle - slide switch
+        self.level_switch = LevelToggleSwitch()
         current_level = SystemState.get_level()
-
-        if current_level == "A_LEVEL":
-            self.level_btn.setText("  A-LEVEL  ")
-        else:
-            self.level_btn.setText("  O-LEVEL  ")
-
-        self.level_btn.clicked.connect(
+        self.level_switch.setChecked(
+            current_level == "A_LEVEL", animate=False
+        )
+        self.level_switch.toggled.connect(
             self.toggle_level
         )
-        self.level_btn.setToolTip(
-            "Click to switch between O-Level and A-Level"
-        )
 
-        self._update_level_btn_style()
-
-        # Help button
-        self.help_btn = QPushButton("?")
+        # Help button — SVG icon
+        self.help_btn = QPushButton()
+        self.help_btn.setIcon(QIcon("assets/icons/help.svg"))
+        self.help_btn.setIconSize(QSize(22, 22))
         self.help_btn.setToolTip("Getting Started Guide")
         self.help_btn.setFixedSize(42, 42)
         self.help_btn.setCursor(Qt.PointingHandCursor)
         self.help_btn.setStyleSheet("""
             QPushButton{
-                background:rgba(34,197,94,0.20);
-                border:2px solid rgba(34,197,94,0.60);
-                border-radius:21px;
-                color:#4ade80;
-                font-size:20px;
-                font-weight:900;
+                background:rgba(34,197,94,0.12);
+                border:1px solid rgba(34,197,94,0.35);
+                border-radius:12px;
             }
             QPushButton:hover{
-                background:rgba(34,197,94,0.35);
+                background:rgba(34,197,94,0.25);
             }
         """)
         self.help_btn.clicked.connect(self.show_help)
 
-        # Theme toggle button
+        # Theme toggle button — SVG icon
         self.theme_btn = QPushButton()
         self.theme_btn.setToolTip("Switch between Light and Dark theme")
+        self.theme_btn.setIconSize(QSize(22, 22))
         self.theme_btn.setFixedSize(42, 42)
         self.theme_btn.setCursor(Qt.PointingHandCursor)
         self.current_theme = "Dark"
@@ -135,7 +228,7 @@ class MainWindow(QMainWindow):
         top_bar.addStretch()
         top_bar.addWidget(self.help_btn)
         top_bar.addWidget(self.theme_btn)
-        top_bar.addWidget(self.level_btn)
+        top_bar.addWidget(self.level_switch)
         top_bar.addWidget(self.refresh_btn)
 
         # =====================================
@@ -604,55 +697,12 @@ class MainWindow(QMainWindow):
         self.sidebar_anim_max.start()
         self.sidebar_anim_min.start()
 
-    def toggle_level(self):
-
-        current = SystemState.get_level()
-
-        if current == "O_LEVEL":
+    def toggle_level(self, is_a_level):
+        if is_a_level:
             SystemState.set_level("A_LEVEL")
-            self.level_btn.setText("  A-LEVEL  ")
         else:
             SystemState.set_level("O_LEVEL")
-            self.level_btn.setText("  O-LEVEL  ")
-
-        self._update_level_btn_style()
         self.refresh_all()
-
-    def _update_level_btn_style(self):
-        """Style the level button as a clear toggle switch."""
-        current = SystemState.get_level()
-        if current == "A_LEVEL":
-            self.level_btn.setStyleSheet("""
-                QPushButton{
-                    background:rgba(147,51,234,0.25);
-                    border:2px solid rgba(168,85,247,0.70);
-                    border-radius:18px;
-                    padding:10px 18px;
-                    color:#c084fc;
-                    font-weight:800;
-                    font-size:14px;
-                    letter-spacing:1px;
-                }
-                QPushButton:hover{
-                    background:rgba(168,85,247,0.35);
-                }
-            """)
-        else:
-            self.level_btn.setStyleSheet("""
-                QPushButton{
-                    background:rgba(37,99,235,0.25);
-                    border:2px solid rgba(59,130,246,0.70);
-                    border-radius:18px;
-                    padding:10px 18px;
-                    color:#93c5fd;
-                    font-weight:800;
-                    font-size:14px;
-                    letter-spacing:1px;
-                }
-                QPushButton:hover{
-                    background:rgba(59,130,246,0.35);
-                }
-            """)
 
     def show_help(self):
         """Show the Getting Started guide dialog."""
@@ -673,33 +723,33 @@ class MainWindow(QMainWindow):
         self._update_theme_btn()
 
     def _update_theme_btn(self):
-        """Update the theme button icon/text based on current theme."""
+        """Update the theme button icon based on current theme."""
         if self.current_theme == "Dark":
-            self.theme_btn.setText("☀")
+            self.theme_btn.setIcon(
+                QIcon("assets/icons/sun.svg")
+            )
             self.theme_btn.setStyleSheet("""
                 QPushButton{
-                    background:rgba(251,191,36,0.15);
-                    border:2px solid rgba(251,191,36,0.50);
-                    border-radius:21px;
-                    color:#fbbf24;
-                    font-size:20px;
+                    background:rgba(251,191,36,0.12);
+                    border:1px solid rgba(251,191,36,0.35);
+                    border-radius:12px;
                 }
                 QPushButton:hover{
-                    background:rgba(251,191,36,0.30);
+                    background:rgba(251,191,36,0.25);
                 }
             """)
         else:
-            self.theme_btn.setText("🌙")
+            self.theme_btn.setIcon(
+                QIcon("assets/icons/moon.svg")
+            )
             self.theme_btn.setStyleSheet("""
                 QPushButton{
-                    background:rgba(99,102,241,0.15);
-                    border:2px solid rgba(99,102,241,0.50);
-                    border-radius:21px;
-                    color:#818cf8;
-                    font-size:20px;
+                    background:rgba(99,102,241,0.12);
+                    border:1px solid rgba(99,102,241,0.35);
+                    border-radius:12px;
                 }
                 QPushButton:hover{
-                    background:rgba(99,102,241,0.30);
+                    background:rgba(99,102,241,0.25);
                 }
             """)
 
